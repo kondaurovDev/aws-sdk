@@ -1,0 +1,23 @@
+{
+  "name": "demo",
+  "private": true,
+  "description": "Uses @effect-ak/aws-sdk the way a consumer project does; its checks and tests verify the generated code",
+  "type": "module",
+  "scripts": {
+    "generate": "gen-aws-sdk",
+    "check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "catalog:aws",
+    "@aws-sdk/client-s3": "catalog:aws",
+    "@aws-sdk/client-sqs": "catalog:aws",
+    "effect": "catalog:effect"
+  },
+  "devDependencies": {
+    "@effect-ak/aws-sdk": "workspace:*",
+    "@types/node": "catalog:tooling",
+    "typescript": "catalog:tooling",
+    "vitest": "catalog:tooling"
+  }
+}

@@ -1,4 +1,5 @@
 node_modules
 dist
 *.tgz
-test/.generated
+# Output of `pnpm generate`, recreated in CI
+examples/demo/src/generated

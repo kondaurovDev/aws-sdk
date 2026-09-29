@@ -1,0 +1,28 @@
+packages:
+  - packages/*
+  - examples/*
+
+# Never auto-(re)install node_modules before run/exec: in CI mode pnpm silently
+# confirms a full modules purge, which can wipe node_modules mid-session.
+verifyDepsBeforeRun: false
+
+allowBuilds:
+  esbuild: true
+
+catalogs:
+  # Generated code targets this exact Effect release. RC releases still change
+  # APIs between versions, so the generator and the demo move together.
+  effect:
+    effect: 4.0.0-rc.118
+  # AWS SDK clients used by the demo (real-world generation input).
+  aws:
+    "@aws-sdk/client-dynamodb": 3.1137.0
+    "@aws-sdk/client-s3": 3.1137.0
+    "@aws-sdk/client-sqs": 3.1137.0
+  tooling:
+    "@changesets/cli": ^2.31.1
+    "@types/node": ^24.19.0
+    ts-morph: ^28.0.0
+    tsdown: ^0.23.0
+    typescript: ^7.0.2
+    vitest: ^4.1.11

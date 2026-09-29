@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "@effect-ak/aws-sdk configuration",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "generate_to": {
+      "type": "string",
+      "minLength": 1,
+      "title": "Generate to",
+      "description": "Directory for the generated files, relative to the project root",
+      "default": "src/generated"
+    },
+    "clients": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "string",
+          "minLength": 1
+        }
+      ],
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "title": "Clients",
+      "description": "Generate only these clients, e.g. \"s3\" for @aws-sdk/client-s3. Defaults to every @aws-sdk/client-* dependency in package.json"
+    },
+    "global": {
+      "type": "object",
+      "properties": {
+        "region": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Default region for every generated client layer"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

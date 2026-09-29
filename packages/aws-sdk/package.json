@@ -1,0 +1,63 @@
+{
+  "name": "@effect-ak/aws-sdk",
+  "version": "1.0.0",
+  "author": {
+    "name": "Aleksandr Kondaurov",
+    "email": "kondaurov.dev@gmail.com"
+  },
+  "description": "Generates an AWS SDK wrapper for the Effect-ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "files": [
+    "dist",
+    "schema.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/effect-ak/aws-sdk.git",
+    "directory": "packages/aws-sdk"
+  },
+  "homepage": "https://github.com/effect-ak/aws-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/effect-ak/aws-sdk/issues"
+  },
+  "keywords": [
+    "aws",
+    "aws-sdk",
+    "effect",
+    "effect-ts",
+    "generator",
+    "code-generation",
+    "typescript",
+    "functional-programming"
+  ],
+  "license": "MIT",
+  "bin": {
+    "gen-aws-sdk": "./dist/cli.mjs"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "generate:schema": "node src/config/json-schema.ts",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "ts-morph": "catalog:tooling"
+  },
+  "peerDependencies": {
+    "effect": "^4.0.0-rc.118"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:tooling",
+    "effect": "catalog:effect",
+    "tsdown": "catalog:tooling",
+    "typescript": "catalog:tooling",
+    "vitest": "catalog:tooling"
+  }
+}

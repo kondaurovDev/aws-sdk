@@ -1,67 +1,26 @@
 {
-  "name": "@effect-ak/aws-sdk",
-  "version": "1.0.0",
-  "author": {
-    "name": "Aleksandr Kondaurov",
-    "email": "kondaurov.dev@gmail.com"
-  },
-  "description": "Generates an AWS SDK wrapper for the Effect-ts",
-  "publishConfig": {
-    "access": "public"
-  },
-  "files": [
-    "dist",
-    "schema.json"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/effect-ak/aws-sdk.git"
-  },
-  "homepage": "https://github.com/effect-ak/aws-sdk#readme",
-  "bugs": {
-    "url": "https://github.com/effect-ak/aws-sdk/issues"
-  },
-  "keywords": [
-    "aws",
-    "aws-sdk",
-    "effect",
-    "effect-ts",
-    "generator",
-    "code-generation",
-    "typescript",
-    "functional-programming"
-  ],
-  "license": "MIT",
-  "main": "./dist/generate.js",
-  "module": "./dist/generate.mjs",
-  "bin": {
-    "gen-aws-sdk": "./dist/generate.js"
-  },
+  "name": "aws-sdk-monorepo",
+  "private": true,
+  "type": "module",
   "scripts": {
-    "build": "tsup",
-    "generate:schema": "tsx src/generate-schema.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
+    "build": "pnpm -F @effect-ak/aws-sdk run build",
+    "generate": "pnpm -F demo run generate",
+    "check": "pnpm -r --if-present run check",
+    "test": "pnpm -r --if-present run test",
+    "ci": "pnpm run build && pnpm run generate && pnpm run check && pnpm run test",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "pnpm build && changeset publish",
-    "postinstall": "test -f ./dist/postinstall.js && node ./dist/postinstall.js || exit 0"
-  },
-  "dependencies": {
-    "ts-morph": "^26.0.0"
-  },
-  "peerDependencies": {
-    "effect": "^3.12.0"
+    "release": "pnpm run build && changeset publish"
   },
   "devDependencies": {
-    "@aws-sdk/client-s3": "3.876.0",
-    "@changesets/cli": "^2.29.8",
-    "@types/node": "^22.10.1",
-    "effect": "3.12.0",
-    "tsup": "^8.5.0",
-    "typescript": "^5.9.3",
-    "vite-tsconfig-paths": "^6.0.5",
-    "vitest": "^4.0.18"
+    "@changesets/cli": "catalog:tooling",
+    "typescript": "catalog:tooling"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": ">=12.0.0 <13.0.0",
+      "onFail": "download"
+    }
   }
 }

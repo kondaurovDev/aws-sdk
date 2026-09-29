@@ -1,0 +1,7 @@
+{
+  "$schema": "node_modules/@effect-ak/aws-sdk/schema.json",
+  "generate_to": "src/generated",
+  "global": {
+    "region": "us-east-1"
+  }
+}

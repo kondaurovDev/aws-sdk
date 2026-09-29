@@ -1,0 +1,8 @@
+{
+  "mode": "pre",
+  "tag": "next",
+  "initialVersions": {
+    "@effect-ak/aws-sdk": "1.0.0"
+  },
+  "changesets": []
+}

@@ -1,0 +1,147 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderClient > renders the client module 1`] = `
+"// *****  GENERATED CODE *****
+// Source: @aws-sdk/client-acme. Do not edit, run \`gen-aws-sdk\` to regenerate.
+
+import * as Sdk from "@aws-sdk/client-acme"
+import * as Context from "effect/Context"
+import * as Data from "effect/Data"
+import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
+
+/** The \`@aws-sdk/client-acme\` client, provided by {@link AcmeClient.layer}. */
+export class AcmeClient extends Context.Service<AcmeClient, Sdk.AcmeClient>()(
+  "@effect-ak/aws-sdk/AcmeClient"
+) {
+  /**
+   * Creates the SDK client when the layer is built and destroys it when the
+   * layer is released.
+   */
+  static readonly layer = (config?: Sdk.AcmeClientConfig): Layer.Layer<AcmeClient> =>
+    Layer.effect(
+      AcmeClient,
+      Effect.acquireRelease(
+        Effect.sync(() => new Sdk.AcmeClient({ region: "eu-west-1", ...config })),
+        (client) => Effect.sync(() => client.destroy())
+      )
+    )
+}
+
+/** Every modeled Acme service exception, by name. */
+export type AcmeErrors = {
+  AccessDeniedException: Sdk.AccessDeniedException
+  ThingNotFound: Sdk.ThingNotFound
+}
+
+/** [input, output, documented exception names] of every Acme command. */
+type AcmeApi = {
+  get_thing: [Sdk.GetThingCommandInput, Sdk.GetThingCommandOutput, "AccessDeniedException" | "ThingNotFound"]
+  list_things: [Sdk.ListThingsCommandInput, Sdk.ListThingsCommandOutput, never]
+}
+
+export type AcmeMethod = keyof AcmeApi
+export type AcmeMethodInput<M extends AcmeMethod> = AcmeApi[M][0]
+export type AcmeMethodOutput<M extends AcmeMethod> = AcmeApi[M][1]
+/** The input may be omitted when none of its fields is required. */
+export type AcmeMethodArgs<M extends AcmeMethod> = {} extends AcmeMethodInput<M>
+  ? [input?: AcmeMethodInput<M>]
+  : [input: AcmeMethodInput<M>]
+/** Names of the exceptions documented for method \`M\`. */
+export type AcmeMethodError<M extends AcmeMethod> = AcmeApi[M][2]
+
+/**
+ * A modeled Acme service exception raised by {@link make}. Failures outside
+ * of the service model (network, credentials, ...) are defects.
+ */
+export class AcmeError<M extends AcmeMethod = AcmeMethod> extends Data.TaggedError("AcmeError")<{
+  readonly message: string
+  readonly cause: Sdk.AcmeServiceException
+  readonly command: AcmeMethod
+}> {
+  declare readonly command: M
+
+  /** Narrows to one of the exceptions documented for the failed command. */
+  $is<N extends AcmeMethodError<M>>(
+    name: N
+  ): this is AcmeError<M> & { readonly cause: AcmeErrors[N & keyof AcmeErrors] } {
+    return this.cause.name === name
+  }
+
+  /** Narrows to any modeled Acme exception. */
+  is<N extends keyof AcmeErrors>(name: N): this is AcmeError<M> & { readonly cause: AcmeErrors[N] } {
+    return this.cause.name === name
+  }
+}
+
+const AcmeCommands: { readonly [M in AcmeMethod]: new (input: AcmeMethodInput<M>) => unknown } = {
+  get_thing: Sdk.GetThingCommand,
+  list_things: Sdk.ListThingsCommand,
+}
+
+/**
+ * Runs the given Acme command. Interrupting the effect aborts the HTTP request.
+ *
+ * @example
+ * \`\`\`ts
+ * import { acme } from "./generated/index.js"
+ *
+ * const program = acme.make("get_thing", { ... }).pipe(
+ *   Effect.provide(acme.AcmeClient.layer())
+ * )
+ * \`\`\`
+ */
+export const make = <M extends AcmeMethod>(
+  command: M,
+  ...[input]: AcmeMethodArgs<M>
+): Effect.Effect<AcmeMethodOutput<M>, AcmeError<M>, AcmeClient> =>
+  Effect.gen(function* () {
+    const client = yield* AcmeClient
+    const sdkCommand = new AcmeCommands[command]((input ?? {}) as AcmeMethodInput<M>)
+    return yield* Effect.tryPromise({
+      try: (signal) =>
+        client.send(sdkCommand as Parameters<typeof client.send>[0], {
+          abortSignal: signal
+        }) as Promise<AcmeMethodOutput<M>>,
+      catch: (cause) => {
+        if (cause instanceof Sdk.AcmeServiceException) {
+          return new AcmeError<M>({ message: \`\${command}: \${cause.name}: \${cause.message}\`, cause, command })
+        }
+        // Rethrowing from \`catch\` turns the failure into a defect
+        throw cause
+      }
+    })
+  }).pipe(
+    Effect.withSpan(\`Acme.\${command}\`, {
+      attributes: { "rpc.system": "aws-api", "rpc.service": "Acme", "rpc.method": command }
+    })
+  )
+"
+`;
+
+exports[`renderIndex > re-exports every client and merges their layers 1`] = `
+"// *****  GENERATED CODE *****
+// Source: aws-sdk.json. Do not edit, run \`gen-aws-sdk\` to regenerate.
+
+import type { AcmeClientConfig } from "@aws-sdk/client-acme"
+import type { CloudWatchLogsClientConfig } from "@aws-sdk/client-cloudwatch-logs"
+import * as Layer from "effect/Layer"
+
+import * as acme from "./acme.js"
+import * as cloudwatch_logs from "./cloudwatch-logs.js"
+
+export { acme, cloudwatch_logs }
+
+export interface ClientsConfig {
+  readonly acme?: AcmeClientConfig
+  readonly cloudwatch_logs?: CloudWatchLogsClientConfig
+}
+
+/** A single layer providing every generated client. */
+export const makeClients = (config?: ClientsConfig) =>
+  Layer.mergeAll(
+    acme.AcmeClient.layer(config?.acme),
+    cloudwatch_logs.CloudWatchLogsClient.layer(config?.cloudwatch_logs),
+  )
+"
+`;

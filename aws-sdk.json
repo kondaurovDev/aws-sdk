@@ -1,7 +1,0 @@
-{
-  "generate_to": "test/.generated",
-  "clients": ["s3"],
-  "global": {
-    "region": "us-east-1"
-  }
-}

@@ -12,6 +12,8 @@
     "@aws-sdk/client-dynamodb": "catalog:aws",
     "@aws-sdk/client-s3": "catalog:aws",
     "@aws-sdk/client-sqs": "catalog:aws",
+    "@aws-sdk/lib-dynamodb": "catalog:aws",
+    "@aws-sdk/s3-request-presigner": "catalog:aws",
     "effect": "catalog:effect"
   },
   "devDependencies": {

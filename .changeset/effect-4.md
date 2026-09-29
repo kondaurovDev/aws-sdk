@@ -11,11 +11,22 @@ Breaking changes in the generated code:
 - `AllClientsDefault` is removed, use `makeClients()`. `internal/utils.ts` is no longer generated and is deleted on the next run.
 - Inputs and outputs are no longer logged at debug level (they may contain secrets); every call runs in a span named `<Service>.<method>` instead.
 
+New in the generated code:
+
+- `paginate(command, input?, options?)` streams the pages of every command the SDK has a paginator for, with the errors of that command. Leaving the stream early aborts the request in flight.
+- `waitUntil(waiter, input, { maxWaitTime })` wraps the SDK waiters; `XWaiterError` reports `TIMEOUT` or `FAILURE`.
+- `presign(command, input?, options?)` for S3 when `@aws-sdk/s3-request-presigner` is installed.
+- `dynamodb_document`: a module for `@aws-sdk/lib-dynamodb` when it is installed, with the same `make`/`paginate` API, native JavaScript values, and the DynamoDB exceptions typed per command. Its layer wraps the `DynamoDBClient` from the context; `makeClients` wires both.
+- `XError` exposes the SDK's metadata: `isRetryable`, `isThrottling`, `fault`, `statusCode`, `requestId`.
+- Each command carries the first paragraph of its AWS documentation, shown by editors in completion and hover.
+
 Improvements:
 
 - Interrupting `make` aborts the HTTP request.
 - The input of commands without required fields may be omitted: `s3.make("list_buckets")`.
 - New helper types: `XMethod`, `XMethodOutput<M>`, `XMethodError<M>`, `XErrors`.
+- The generator is verified against every published `@aws-sdk/client-*` package (435 at the time of writing): all of them scan and the generated code typechecks.
+- Every client is scanned before the run fails, so one run reports every problem.
 - Client packages are found in parent `node_modules` too (hoisted and workspace installs). Only their declaration files are parsed, without type checking.
 - Previously generated files of removed clients are deleted; unchanged files are not rewritten.
 - `aws-sdk.json` rejects unknown keys, `clients` accepts full package names, and invalid configuration fails with a clear message and exit code 1.

@@ -1,0 +1,35 @@
+name: Probe All AWS Clients
+
+# Generates and typechecks wrappers for every published @aws-sdk/client-*
+# package, so a change in the SDK's declaration files shows up here before a
+# user hits it.
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "@aws-sdk/client-* version to probe"
+        default: latest
+
+jobs:
+  probe:
+    name: Probe All AWS Clients
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node, pnpm and install deps
+        uses: ./.github/actions/setup
+
+      - name: Build the generator
+        run: pnpm run build
+
+      - name: Generate and typecheck every client
+        run: pnpm run probe -- --version "${{ inputs.version || 'latest' }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

@@ -21,6 +21,8 @@ export interface Config {
   /** Package suffixes: `s3` for `@aws-sdk/client-s3` */
   readonly clients: ReadonlyArray<string>
   readonly region: string | undefined
+  /** Names of every dependency and devDependency in package.json, sorted */
+  readonly dependencies: ReadonlyArray<string>
 }
 
 const CLIENT_PACKAGE_PREFIX = "@aws-sdk/client-"
@@ -82,16 +84,17 @@ export const loadConfig: Effect.Effect<Config, ConfigError> = Effect.gen(functio
     )
   }
 
-  const installedClients = Object.keys(dependencies)
+  const dependencyNames = Object.keys(dependencies).sort()
+  const installedClients = dependencyNames
     .filter((name) => name.startsWith(CLIENT_PACKAGE_PREFIX))
     .map(toClientName)
-    .sort()
 
   const config: Config = {
     root,
     generateTo: path.resolve(root, configFile.generate_to ?? DEFAULT_GENERATE_TO),
     clients: configFile.clients ? [...new Set(configFile.clients.map(toClientName))] : installedClients,
-    region: configFile.global?.region
+    region: configFile.global?.region,
+    dependencies: dependencyNames
   }
 
   yield* Effect.logDebug("Resolved configuration", config)

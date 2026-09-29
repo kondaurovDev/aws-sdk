@@ -19,6 +19,8 @@ catalogs:
     "@aws-sdk/client-dynamodb": 3.1137.0
     "@aws-sdk/client-s3": 3.1137.0
     "@aws-sdk/client-sqs": 3.1137.0
+    "@aws-sdk/lib-dynamodb": 3.1137.0
+    "@aws-sdk/s3-request-presigner": 3.1137.0
   tooling:
     "@changesets/cli": ^2.31.1
     "@types/node": ^24.19.0

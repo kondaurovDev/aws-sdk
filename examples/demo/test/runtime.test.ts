@@ -1,6 +1,5 @@
 // Runs the generated wrappers against real SDK clients whose HTTP layer is
 // replaced by canned responses, so no AWS account or network is involved.
-import { Readable } from "node:stream"
 import * as DynamoDBSdk from "@aws-sdk/client-dynamodb"
 import * as S3Sdk from "@aws-sdk/client-s3"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -8,40 +7,7 @@ import { Cause, Effect, Exit, Layer } from "effect"
 
 import { dynamodb, makeClients, s3 } from "../src/generated/index.js"
 import { ensureBucket, getItem } from "../src/main.js"
-
-interface CannedResponse {
-  readonly statusCode: number
-  readonly headers?: Record<string, string>
-  readonly body?: string
-}
-
-type Handle = (request: { method: string; path: string; headers: Record<string, string> }, signal?: AbortSignal) =>
-  Promise<CannedResponse>
-
-/** SDK client config whose requests are answered by `handle`. */
-const fakeAws = (handle: Handle) => ({
-  region: "us-east-1",
-  credentials: { accessKeyId: "test", secretAccessKey: "test" },
-  maxAttempts: 1,
-  requestHandler: {
-    handle: async (request: any, options?: { abortSignal?: AbortSignal }) => {
-      const { statusCode, headers = {}, body = "" } = await handle(request, options?.abortSignal)
-      return { response: { statusCode, headers, body: Readable.from([Buffer.from(body)]) } }
-    }
-  }
-})
-
-const s3Error = (statusCode: number, code: string) => ({
-  statusCode,
-  headers: { "content-type": "application/xml" },
-  body: `<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code} message</Message></Error>`
-})
-
-const dynamodbJson = (statusCode: number, body: unknown) => ({
-  statusCode,
-  headers: { "content-type": "application/x-amz-json-1.0" },
-  body: JSON.stringify(body)
-})
+import { dynamodbJson, fakeAws, s3Error, type Handle } from "./fake-aws.js"
 
 afterEach(() => {
   vi.restoreAllMocks()

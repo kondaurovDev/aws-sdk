@@ -1,14 +1,17 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`renderClient > renders the client module 1`] = `
+exports[`renderClient > renders a client with paginators, waiters and a presigner 1`] = `
 "// *****  GENERATED CODE *****
 // Source: @aws-sdk/client-acme. Do not edit, run \`gen-aws-sdk\` to regenerate.
 
 import * as Sdk from "@aws-sdk/client-acme"
+import { getSignedUrl } from "@aws-sdk/acme-request-presigner"
 import * as Context from "effect/Context"
 import * as Data from "effect/Data"
+import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
+import * as Stream from "effect/Stream"
 
 /** The \`@aws-sdk/client-acme\` client, provided by {@link AcmeClient.layer}. */
 export class AcmeClient extends Context.Service<AcmeClient, Sdk.AcmeClient>()(
@@ -36,6 +39,7 @@ export type AcmeErrors = {
 
 /** [input, output, documented exception names] of every Acme command. */
 type AcmeApi = {
+  /** Gets a thing. */
   get_thing: [Sdk.GetThingCommandInput, Sdk.GetThingCommandOutput, "AccessDeniedException" | "ThingNotFound"]
   list_things: [Sdk.ListThingsCommandInput, Sdk.ListThingsCommandOutput, never]
 }
@@ -43,12 +47,12 @@ type AcmeApi = {
 export type AcmeMethod = keyof AcmeApi
 export type AcmeMethodInput<M extends AcmeMethod> = AcmeApi[M][0]
 export type AcmeMethodOutput<M extends AcmeMethod> = AcmeApi[M][1]
-/** The input may be omitted when none of its fields is required. */
-export type AcmeMethodArgs<M extends AcmeMethod> = {} extends AcmeMethodInput<M>
-  ? [input?: AcmeMethodInput<M>]
-  : [input: AcmeMethodInput<M>]
 /** Names of the exceptions documented for method \`M\`. */
 export type AcmeMethodError<M extends AcmeMethod> = AcmeApi[M][2]
+/** The input may be omitted when none of its fields is required. */
+export type AcmeMethodArgs<M extends AcmeMethod, Options = never> = {} extends AcmeMethodInput<M>
+  ? [input?: AcmeMethodInput<M>, ...options: [Options] extends [never] ? [] : [options?: Options]]
+  : [input: AcmeMethodInput<M>, ...options: [Options] extends [never] ? [] : [options?: Options]]
 
 /**
  * A modeled Acme service exception raised by {@link make}. Failures outside
@@ -72,6 +76,37 @@ export class AcmeError<M extends AcmeMethod = AcmeMethod> extends Data.TaggedErr
   is<N extends keyof AcmeErrors>(name: N): this is AcmeError<M> & { readonly cause: AcmeErrors[N] } {
     return this.cause.name === name
   }
+
+  /** The SDK marks the exception as retryable: throttling or a transient server error. */
+  get isRetryable(): boolean {
+    return this.cause.$retryable !== undefined
+  }
+
+  /** The request was throttled; retry with backoff. */
+  get isThrottling(): boolean {
+    return this.cause.$retryable?.throttling === true
+  }
+
+  /** Whether the client (4xx) or the service (5xx) is at fault, per the SDK. */
+  get fault(): "client" | "server" {
+    return this.cause.$fault
+  }
+
+  get statusCode(): number | undefined {
+    return this.cause.$metadata.httpStatusCode
+  }
+
+  get requestId(): string | undefined {
+    return this.cause.$metadata.requestId
+  }
+}
+
+const toAcmeError = <M extends AcmeMethod>(command: M, cause: unknown): AcmeError<M> => {
+  if (cause instanceof Sdk.AcmeServiceException) {
+    return new AcmeError<M>({ message: \`\${command}: \${cause.name}: \${cause.message}\`, cause, command })
+  }
+  // Rethrowing turns anything outside the service model into a defect
+  throw cause
 }
 
 const AcmeCommands: { readonly [M in AcmeMethod]: new (input: AcmeMethodInput<M>) => unknown } = {
@@ -103,19 +138,421 @@ export const make = <M extends AcmeMethod>(
         client.send(sdkCommand as Parameters<typeof client.send>[0], {
           abortSignal: signal
         }) as Promise<AcmeMethodOutput<M>>,
-      catch: (cause) => {
-        if (cause instanceof Sdk.AcmeServiceException) {
-          return new AcmeError<M>({ message: \`\${command}: \${cause.name}: \${cause.message}\`, cause, command })
-        }
-        // Rethrowing from \`catch\` turns the failure into a defect
-        throw cause
-      }
+      catch: (cause) => toAcmeError(command, cause)
     })
   }).pipe(
     Effect.withSpan(\`Acme.\${command}\`, {
       attributes: { "rpc.system": "aws-api", "rpc.service": "Acme", "rpc.method": command }
     })
   )
+
+export type AcmePaginated = "list_things"
+
+/** Configuration shared by the SDK paginators of this client */
+type AcmePaginatorConfig = Parameters<typeof Sdk.paginateListThings>[0]
+
+const AcmePaginators: {
+  readonly [M in AcmePaginated]: (
+    config: AcmePaginatorConfig,
+    input: AcmeMethodInput<M>,
+    ...rest: Array<any>
+  ) => AsyncIterable<AcmeMethodOutput<M>>
+} = {
+  list_things: Sdk.paginateListThings,
+}
+
+export interface AcmePaginateOptions {
+  /** Items per page, when the command supports a page size */
+  readonly pageSize?: number
+  /** Token of the page to start from */
+  readonly startingToken?: unknown
+  /** Stop when the service keeps returning the same token instead of omitting it */
+  readonly stopOnSameToken?: boolean
+}
+
+/**
+ * Streams the pages of a paginated Acme command, one output per page.
+ * Interrupting the stream aborts the request in flight.
+ *
+ * @example
+ * \`\`\`ts
+ * const items = acme.paginate("list_things", { ... }).pipe(
+ *   Stream.flatMap((page) => Stream.fromIterable(page.Items ?? [])),
+ *   Stream.runCollect
+ * )
+ * \`\`\`
+ */
+export const paginate = <M extends AcmePaginated>(
+  command: M,
+  ...[input, options]: AcmeMethodArgs<M, AcmePaginateOptions>
+): Stream.Stream<AcmeMethodOutput<M>, AcmeError<M>, AcmeClient> =>
+  Stream.unwrap(
+    Effect.map(AcmeClient, (client) => {
+      const controller = new AbortController()
+      const pages = AcmePaginators[command](
+        { client, ...options },
+        (input ?? {}) as AcmeMethodInput<M>,
+        { abortSignal: controller.signal }
+      )
+      return Stream.fromAsyncIterable(abortable(pages, controller), (cause) => cause).pipe(
+        Stream.catch((cause) =>
+          cause instanceof Sdk.AcmeServiceException
+            ? Stream.fail(toAcmeError(command, cause))
+            : Stream.die(cause)
+        )
+      )
+    })
+  )
+
+/** Aborts the request in flight when the consumer stops iterating. */
+const abortable = <A>(pages: AsyncIterable<A>, controller: AbortController): AsyncIterable<A> => ({
+  [Symbol.asyncIterator]: () => {
+    const iterator = pages[Symbol.asyncIterator]()
+    return {
+      next: () => iterator.next(),
+      return: () => {
+        controller.abort()
+        // Not awaited: the SDK generator's \`return\` waits for the aborted request to settle
+        void iterator.return?.().catch(() => {})
+        return Promise.resolve({ done: true, value: undefined })
+      }
+    }
+  }
+})
+
+export type AcmeWaiter = "thing_exists"
+
+type AcmeWaiterInputs = {
+  thing_exists: Parameters<typeof Sdk.waitUntilThingExists>[1]
+}
+
+export type AcmeWaiterInput<W extends AcmeWaiter> = AcmeWaiterInputs[W]
+
+interface AcmeWaiterParams {
+  readonly client: Sdk.AcmeClient
+  readonly maxWaitTime: number
+  readonly minDelay?: number
+  readonly maxDelay?: number
+  readonly abortSignal?: AbortSignal
+}
+
+const AcmeWaiters: {
+  readonly [W in AcmeWaiter]: (params: AcmeWaiterParams, input: AcmeWaiterInput<W>) => Promise<unknown>
+} = {
+  thing_exists: Sdk.waitUntilThingExists,
+}
+
+export interface AcmeWaitOptions {
+  /** Give up after this long. The SDK polls with backoff in between. */
+  readonly maxWaitTime: Duration.Input
+  readonly minDelay?: Duration.Input
+  readonly maxDelay?: Duration.Input
+}
+
+/** The awaited state was not reached. */
+export class AcmeWaiterError<W extends AcmeWaiter = AcmeWaiter> extends Data.TaggedError("AcmeWaiterError")<{
+  readonly message: string
+  readonly waiter: AcmeWaiter
+  /** \`TIMEOUT\` after \`maxWaitTime\`; \`FAILURE\` when a state the waiter cannot recover from was observed */
+  readonly state: "TIMEOUT" | "FAILURE"
+  /** The last response or exception the SDK observed, when it reported one */
+  readonly reason: unknown
+  readonly cause: Error
+}> {
+  declare readonly waiter: W
+}
+
+const toAcmeWaiterError = <W extends AcmeWaiter>(waiter: W, cause: unknown): AcmeWaiterError<W> => {
+  // The waiter only aborts when the effect is interrupted; an invalid
+  // configuration (maxWaitTime below minDelay, ...) is a defect
+  if (!(cause instanceof Error) || cause.name === "AbortError" || cause.message.startsWith("WaiterConfiguration.")) {
+    throw cause
+  }
+  // The SDK serializes the final waiter result into the message
+  let details: { readonly state?: unknown; readonly reason?: unknown } = {}
+  try {
+    details = JSON.parse(cause.message)
+  } catch {}
+  const state = cause.name === "TimeoutError" || details.state === "TIMEOUT" ? "TIMEOUT" : "FAILURE"
+  return new AcmeWaiterError<W>({
+    message: state === "TIMEOUT" ? \`\${waiter}: not reached within maxWaitTime\` : \`\${waiter}: cannot be reached\`,
+    waiter,
+    state,
+    reason: details.reason,
+    cause
+  })
+}
+
+const AcmeWaiterDelays = (options: AcmeWaitOptions) => ({
+  maxWaitTime: Duration.toSeconds(options.maxWaitTime),
+  ...(options.minDelay !== undefined && { minDelay: Duration.toSeconds(options.minDelay) }),
+  ...(options.maxDelay !== undefined && { maxDelay: Duration.toSeconds(options.maxDelay) })
+})
+
+/**
+ * Polls with the SDK waiter until the awaited state is reached. Interrupting
+ * the effect stops polling and aborts the request in flight.
+ *
+ * @example
+ * \`\`\`ts
+ * yield* acme.waitUntil("thing_exists", { ... }, { maxWaitTime: "2 minutes" })
+ * \`\`\`
+ */
+export const waitUntil = <W extends AcmeWaiter>(
+  waiter: W,
+  input: AcmeWaiterInput<W>,
+  options: AcmeWaitOptions
+): Effect.Effect<void, AcmeWaiterError<W>, AcmeClient> =>
+  Effect.gen(function* () {
+    const client = yield* AcmeClient
+    yield* Effect.tryPromise({
+      try: (signal) => AcmeWaiters[waiter]({ client, abortSignal: signal, ...AcmeWaiterDelays(options) }, input),
+      catch: (cause) => toAcmeWaiterError(waiter, cause)
+    })
+  }).pipe(Effect.withSpan(\`Acme.waitUntil.\${waiter}\`))
+
+export type AcmePresignOptions = NonNullable<Parameters<typeof getSignedUrl>[2]>
+
+type AcmePresignCommand = Parameters<
+  typeof getSignedUrl<Sdk.ServiceInputTypes, Sdk.ServiceInputTypes, Sdk.ServiceOutputTypes>
+>[1]
+
+/**
+ * Creates a presigned URL for a Acme command without calling AWS. The URL
+ * expires after \`expiresIn\` seconds, 15 minutes by default. Failures, such
+ * as missing credentials, are defects.
+ */
+export const presign = <M extends AcmeMethod>(
+  command: M,
+  ...[input, options]: AcmeMethodArgs<M, AcmePresignOptions>
+): Effect.Effect<string, never, AcmeClient> =>
+  Effect.gen(function* () {
+    const client = yield* AcmeClient
+    const sdkCommand = new AcmeCommands[command]((input ?? {}) as AcmeMethodInput<M>)
+    return yield* Effect.promise(() => getSignedUrl(client, sdkCommand as AcmePresignCommand, options))
+  })
+"
+`;
+
+exports[`renderClient > renders a document client on top of its base client 1`] = `
+"// *****  GENERATED CODE *****
+// Source: @aws-sdk/lib-acme. Do not edit, run \`gen-aws-sdk\` to regenerate.
+
+import * as Sdk from "@aws-sdk/lib-acme"
+import * as Base from "@aws-sdk/client-acme"
+import * as Context from "effect/Context"
+import * as Data from "effect/Data"
+import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
+import * as Stream from "effect/Stream"
+
+import { AcmeClient } from "./acme.js"
+
+/** The \`@aws-sdk/lib-acme\` client, provided by {@link AcmeDocumentClient.layer}. */
+export class AcmeDocumentClient extends Context.Service<AcmeDocumentClient, Sdk.AcmeDocumentClient>()(
+  "@effect-ak/aws-sdk/AcmeDocumentClient"
+) {
+  /**
+   * Wraps the AcmeClient from the context. Its lifecycle stays
+   * with that client's layer.
+   */
+  static readonly layer = (
+    config?: Sdk.TranslateConfig
+  ): Layer.Layer<AcmeDocumentClient, never, AcmeClient> =>
+    Layer.effect(
+      AcmeDocumentClient,
+      Effect.map(AcmeClient, (client) => Sdk.AcmeDocumentClient.from(client, config))
+    )
+}
+
+/** Every modeled AcmeDocument service exception, by name. */
+export type AcmeDocumentErrors = {
+  AccessDeniedException: Base.AccessDeniedException
+  ThingNotFound: Base.ThingNotFound
+}
+
+/** [input, output, documented exception names] of every AcmeDocument command. */
+type AcmeDocumentApi = {
+  /** Gets a thing. */
+  get: [Sdk.GetCommandInput, Sdk.GetCommandOutput, "AccessDeniedException" | "ThingNotFound"]
+  list: [Sdk.ListCommandInput, Sdk.ListCommandOutput, never]
+}
+
+export type AcmeDocumentMethod = keyof AcmeDocumentApi
+export type AcmeDocumentMethodInput<M extends AcmeDocumentMethod> = AcmeDocumentApi[M][0]
+export type AcmeDocumentMethodOutput<M extends AcmeDocumentMethod> = AcmeDocumentApi[M][1]
+/** Names of the exceptions documented for method \`M\`. */
+export type AcmeDocumentMethodError<M extends AcmeDocumentMethod> = AcmeDocumentApi[M][2]
+/** The input may be omitted when none of its fields is required. */
+export type AcmeDocumentMethodArgs<M extends AcmeDocumentMethod, Options = never> = {} extends AcmeDocumentMethodInput<M>
+  ? [input?: AcmeDocumentMethodInput<M>, ...options: [Options] extends [never] ? [] : [options?: Options]]
+  : [input: AcmeDocumentMethodInput<M>, ...options: [Options] extends [never] ? [] : [options?: Options]]
+
+/**
+ * A modeled AcmeDocument service exception raised by {@link make}. Failures outside
+ * of the service model (network, credentials, ...) are defects.
+ */
+export class AcmeDocumentError<M extends AcmeDocumentMethod = AcmeDocumentMethod> extends Data.TaggedError("AcmeDocumentError")<{
+  readonly message: string
+  readonly cause: Base.AcmeServiceException
+  readonly command: AcmeDocumentMethod
+}> {
+  declare readonly command: M
+
+  /** Narrows to one of the exceptions documented for the failed command. */
+  $is<N extends AcmeDocumentMethodError<M>>(
+    name: N
+  ): this is AcmeDocumentError<M> & { readonly cause: AcmeDocumentErrors[N & keyof AcmeDocumentErrors] } {
+    return this.cause.name === name
+  }
+
+  /** Narrows to any modeled AcmeDocument exception. */
+  is<N extends keyof AcmeDocumentErrors>(name: N): this is AcmeDocumentError<M> & { readonly cause: AcmeDocumentErrors[N] } {
+    return this.cause.name === name
+  }
+
+  /** The SDK marks the exception as retryable: throttling or a transient server error. */
+  get isRetryable(): boolean {
+    return this.cause.$retryable !== undefined
+  }
+
+  /** The request was throttled; retry with backoff. */
+  get isThrottling(): boolean {
+    return this.cause.$retryable?.throttling === true
+  }
+
+  /** Whether the client (4xx) or the service (5xx) is at fault, per the SDK. */
+  get fault(): "client" | "server" {
+    return this.cause.$fault
+  }
+
+  get statusCode(): number | undefined {
+    return this.cause.$metadata.httpStatusCode
+  }
+
+  get requestId(): string | undefined {
+    return this.cause.$metadata.requestId
+  }
+}
+
+const toAcmeDocumentError = <M extends AcmeDocumentMethod>(command: M, cause: unknown): AcmeDocumentError<M> => {
+  if (cause instanceof Base.AcmeServiceException) {
+    return new AcmeDocumentError<M>({ message: \`\${command}: \${cause.name}: \${cause.message}\`, cause, command })
+  }
+  // Rethrowing turns anything outside the service model into a defect
+  throw cause
+}
+
+const AcmeDocumentCommands: { readonly [M in AcmeDocumentMethod]: new (input: AcmeDocumentMethodInput<M>) => unknown } = {
+  get: Sdk.GetCommand,
+  list: Sdk.ListCommand,
+}
+
+/**
+ * Runs the given AcmeDocument command. Interrupting the effect aborts the HTTP request.
+ *
+ * @example
+ * \`\`\`ts
+ * import { acme_document } from "./generated/index.js"
+ *
+ * const program = acme_document.make("get", { ... }).pipe(
+ *   Effect.provide(acme_document.AcmeDocumentClient.layer())
+ * )
+ * \`\`\`
+ */
+export const make = <M extends AcmeDocumentMethod>(
+  command: M,
+  ...[input]: AcmeDocumentMethodArgs<M>
+): Effect.Effect<AcmeDocumentMethodOutput<M>, AcmeDocumentError<M>, AcmeDocumentClient> =>
+  Effect.gen(function* () {
+    const client = yield* AcmeDocumentClient
+    const sdkCommand = new AcmeDocumentCommands[command]((input ?? {}) as AcmeDocumentMethodInput<M>)
+    return yield* Effect.tryPromise({
+      try: (signal) =>
+        client.send(sdkCommand as Parameters<typeof client.send>[0], {
+          abortSignal: signal
+        }) as Promise<AcmeDocumentMethodOutput<M>>,
+      catch: (cause) => toAcmeDocumentError(command, cause)
+    })
+  }).pipe(
+    Effect.withSpan(\`AcmeDocument.\${command}\`, {
+      attributes: { "rpc.system": "aws-api", "rpc.service": "AcmeDocument", "rpc.method": command }
+    })
+  )
+
+export type AcmeDocumentPaginated = "list"
+
+/** Configuration shared by the SDK paginators of this client */
+type AcmeDocumentPaginatorConfig = Parameters<typeof Sdk.paginateList>[0]
+
+const AcmeDocumentPaginators: {
+  readonly [M in AcmeDocumentPaginated]: (
+    config: AcmeDocumentPaginatorConfig,
+    input: AcmeDocumentMethodInput<M>,
+    ...rest: Array<any>
+  ) => AsyncIterable<AcmeDocumentMethodOutput<M>>
+} = {
+  list: Sdk.paginateList,
+}
+
+export interface AcmeDocumentPaginateOptions {
+  /** Items per page, when the command supports a page size */
+  readonly pageSize?: number
+  /** Token of the page to start from */
+  readonly startingToken?: unknown
+  /** Stop when the service keeps returning the same token instead of omitting it */
+  readonly stopOnSameToken?: boolean
+}
+
+/**
+ * Streams the pages of a paginated AcmeDocument command, one output per page.
+ * Interrupting the stream aborts the request in flight.
+ *
+ * @example
+ * \`\`\`ts
+ * const items = acme_document.paginate("list", { ... }).pipe(
+ *   Stream.flatMap((page) => Stream.fromIterable(page.Items ?? [])),
+ *   Stream.runCollect
+ * )
+ * \`\`\`
+ */
+export const paginate = <M extends AcmeDocumentPaginated>(
+  command: M,
+  ...[input, options]: AcmeDocumentMethodArgs<M, AcmeDocumentPaginateOptions>
+): Stream.Stream<AcmeDocumentMethodOutput<M>, AcmeDocumentError<M>, AcmeDocumentClient> =>
+  Stream.unwrap(
+    Effect.map(AcmeDocumentClient, (client) => {
+      const controller = new AbortController()
+      const pages = AcmeDocumentPaginators[command](
+        { client, ...options },
+        (input ?? {}) as AcmeDocumentMethodInput<M>,
+        { abortSignal: controller.signal }
+      )
+      return Stream.fromAsyncIterable(abortable(pages, controller), (cause) => cause).pipe(
+        Stream.catch((cause) =>
+          cause instanceof Base.AcmeServiceException
+            ? Stream.fail(toAcmeDocumentError(command, cause))
+            : Stream.die(cause)
+        )
+      )
+    })
+  )
+
+/** Aborts the request in flight when the consumer stops iterating. */
+const abortable = <A>(pages: AsyncIterable<A>, controller: AbortController): AsyncIterable<A> => ({
+  [Symbol.asyncIterator]: () => {
+    const iterator = pages[Symbol.asyncIterator]()
+    return {
+      next: () => iterator.next(),
+      return: () => {
+        controller.abort()
+        // Not awaited: the SDK generator's \`return\` waits for the aborted request to settle
+        void iterator.return?.().catch(() => {})
+        return Promise.resolve({ done: true, value: undefined })
+      }
+    }
+  }
+})
 "
 `;
 

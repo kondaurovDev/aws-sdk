@@ -5,15 +5,17 @@
   "scripts": {
     "build": "pnpm -F @effect-ak/aws-sdk run build",
     "generate": "pnpm -F demo run generate",
-    "check": "pnpm -r --if-present run check",
+    "check": "tsc -p scripts && pnpm -r --if-present run check",
     "test": "pnpm -r --if-present run test",
     "ci": "pnpm run build && pnpm run generate && pnpm run check && pnpm run test",
+    "probe": "node scripts/probe-all-clients.ts",
     "changeset": "changeset",
     "version": "changeset version",
     "release": "pnpm run build && changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "catalog:tooling",
+    "@types/node": "catalog:tooling",
     "typescript": "catalog:tooling"
   },
   "devEngines": {

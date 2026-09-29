@@ -25,7 +25,8 @@ describe("loadConfig", () => {
       root,
       generateTo: path.join(root, "src/generated"),
       clients: ["dynamodb", "s3", "sqs"],
-      region: undefined
+      region: undefined,
+      dependencies: ["@aws-sdk/client-dynamodb", "@aws-sdk/client-s3", "@aws-sdk/client-sqs", "@aws-sdk/types", "effect"]
     })
   })
 
@@ -45,7 +46,8 @@ describe("loadConfig", () => {
       root,
       generateTo: path.join(root, "lib/aws"),
       clients: ["s3", "dynamodb"],
-      region: "eu-west-1"
+      region: "eu-west-1",
+      dependencies: ["@aws-sdk/client-sqs"]
     })
   })
 

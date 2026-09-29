@@ -16,13 +16,19 @@ const acme: SdkModel = {
   serviceExceptionName: "AcmeServiceException",
   exceptions: ["AccessDeniedException", "ThingNotFound"],
   commands: [
-    { name: "GetThing", method: "get_thing", errors: ["AccessDeniedException", "ThingNotFound"] },
-    { name: "ListThings", method: "list_things", errors: [] }
-  ]
+    { name: "GetThing", method: "get_thing", errors: ["AccessDeniedException", "ThingNotFound"], docs: "Gets a thing." },
+    { name: "ListThings", method: "list_things", errors: [], docs: undefined }
+  ],
+  paginators: [{ method: "list_things", functionName: "paginateListThings" }],
+  waiters: [{ method: "thing_exists", functionName: "waitUntilThingExists" }],
+  presigner: "@aws-sdk/acme-request-presigner",
+  base: undefined
 }
 
+const plain: SdkModel = { ...acme, paginators: [], waiters: [], presigner: undefined }
+
 const cloudwatchLogs: SdkModel = {
-  ...acme,
+  ...plain,
   client: "cloudwatch-logs",
   packageName: "@aws-sdk/client-cloudwatch-logs",
   clientClassName: "CloudWatchLogsClient",
@@ -30,29 +36,57 @@ const cloudwatchLogs: SdkModel = {
   serviceExceptionName: "CloudWatchLogsServiceException"
 }
 
+const acmeDocument: SdkModel = {
+  client: "acme-document",
+  packageName: "@aws-sdk/lib-acme",
+  clientClassName: "AcmeDocumentClient",
+  configInterfaceName: "TranslateConfig",
+  serviceExceptionName: "AcmeServiceException",
+  exceptions: acme.exceptions,
+  commands: [
+    { name: "Get", method: "get", errors: ["AccessDeniedException", "ThingNotFound"], docs: "Gets a thing." },
+    { name: "List", method: "list", errors: [], docs: undefined }
+  ],
+  paginators: [{ method: "list", functionName: "paginateList" }],
+  waiters: [],
+  presigner: undefined,
+  base: { client: "acme", packageName: "@aws-sdk/client-acme", clientClassName: "AcmeClient" }
+}
+
 describe("renderClient", () => {
-  it("renders the client module", () => {
+  it("renders a client with paginators, waiters and a presigner", () => {
     // The generated code is type-checked and exercised in examples/demo
     expect(renderClient(acme, { region: "eu-west-1" })).toMatchSnapshot()
   })
 
+  it("renders a document client on top of its base client", () => {
+    expect(renderClient(acmeDocument, { region: undefined })).toMatchSnapshot()
+  })
+
   it("starts with the generated marker", () => {
-    expect(renderClient(acme, { region: undefined }).startsWith(`${GENERATED_MARKER}\n`)).toBe(true)
+    expect(renderClient(plain, { region: undefined }).startsWith(`${GENERATED_MARKER}\n`)).toBe(true)
   })
 
   it("applies the default region only when configured", () => {
-    expect(renderClient(acme, { region: "eu-west-1" })).toContain(
+    expect(renderClient(plain, { region: "eu-west-1" })).toContain(
       `new Sdk.AcmeClient({ region: "eu-west-1", ...config })`
     )
-    expect(renderClient(acme, { region: undefined })).toContain("new Sdk.AcmeClient(config ?? {})")
+    expect(renderClient(plain, { region: undefined })).toContain("new Sdk.AcmeClient(config ?? {})")
   })
 
-  it("types commands without documented errors as never", () => {
-    const code = renderClient(acme, { region: undefined })
+  it("documents commands and types undocumented errors as never", () => {
+    const code = renderClient(plain, { region: undefined })
     expect(code).toContain(
-      `get_thing: [Sdk.GetThingCommandInput, Sdk.GetThingCommandOutput, "AccessDeniedException" | "ThingNotFound"]`
+      `  /** Gets a thing. */\n  get_thing: [Sdk.GetThingCommandInput, Sdk.GetThingCommandOutput, "AccessDeniedException" | "ThingNotFound"]`
     )
-    expect(code).toContain(`list_things: [Sdk.ListThingsCommandInput, Sdk.ListThingsCommandOutput, never]`)
+    expect(code).toContain(`\n  list_things: [Sdk.ListThingsCommandInput, Sdk.ListThingsCommandOutput, never]`)
+  })
+
+  it("omits paginate, waitUntil and presign when the SDK offers none", () => {
+    const code = renderClient(plain, { region: undefined })
+    for (const absent of ["paginate", "waitUntil", "presign", "effect/Stream", "effect/Duration", "getSignedUrl"]) {
+      expect(code).not.toContain(absent)
+    }
   })
 })
 
@@ -60,10 +94,19 @@ describe("renderIndex", () => {
   it("re-exports every client and merges their layers", () => {
     expect(renderIndex([acme, cloudwatchLogs])).toMatchSnapshot()
   })
+
+  it("provides base clients to document clients", () => {
+    const code = renderIndex([acme, acmeDocument])
+    expect(code).toContain(`import type { TranslateConfig } from "@aws-sdk/lib-acme"`)
+    expect(code).toContain("readonly acme_document?: TranslateConfig")
+    expect(code).toContain(
+      `  Layer.provideMerge(\n    Layer.mergeAll(\n      acme_document.AcmeDocumentClient.layer(config?.acme_document),\n    ),\n    Layer.mergeAll(\n      acme.AcmeClient.layer(config?.acme),\n    )\n  )`
+    )
+  })
 })
 
 describe("writeFiles", () => {
-  const files = renderFiles([acme], { region: undefined })
+  const files = renderFiles([plain], { region: undefined })
   const list = (dir: string) => readdir(dir, { recursive: true }).then((entries) => entries.sort())
 
   it("writes files and skips unchanged ones on the next run", async () => {

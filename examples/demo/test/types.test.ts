@@ -6,86 +6,79 @@ import type * as DocumentSdk from "@aws-sdk/lib-dynamodb"
 import { describe, expectTypeOf, it } from "vitest"
 import { Effect, Layer, Stream } from "effect"
 
-import { dynamodb, dynamodb_document, makeClients, s3, sqs } from "../src/generated/index.js"
+import { dynamodb, dynamodb_document, layer, s3, sqs } from "../src/generated/index.js"
 
-describe("make", () => {
-  it("infers input, output, error and requirement per command", () => {
-    expectTypeOf(s3.make("create_bucket", { Bucket: "b" })).toEqualTypeOf<
-      Effect.Effect<S3Sdk.CreateBucketCommandOutput, s3.S3Error<"create_bucket">, s3.S3Client>
+describe("send", () => {
+  it("infers input, output, errors and requirement per command", () => {
+    expectTypeOf(s3.send("create_bucket", { Bucket: "b" })).toEqualTypeOf<
+      Effect.Effect<
+        S3Sdk.CreateBucketCommandOutput,
+        s3.BucketAlreadyExists | s3.BucketAlreadyOwnedByYou | s3.S3Error,
+        s3.S3Client
+      >
     >()
-    expectTypeOf(dynamodb.make("list_tables")).toEqualTypeOf<
-      Effect.Effect<DynamoDBSdk.ListTablesCommandOutput, dynamodb.DynamoDBError<"list_tables">, dynamodb.DynamoDBClient>
+    // Commands without documented exceptions still fail with the catch-all
+    expectTypeOf(s3.send("list_buckets")).toEqualTypeOf<
+      Effect.Effect<S3Sdk.ListBucketsCommandOutput, s3.S3Error, s3.S3Client>
+    >()
+    expectTypeOf(dynamodb.send("list_tables")).toEqualTypeOf<
+      Effect.Effect<DynamoDBSdk.ListTablesCommandOutput, dynamodb.DynamoDBMethodError<"list_tables">, dynamodb.DynamoDBClient>
     >()
   })
 
   it("lets optional input be omitted but not required input", () => {
-    s3.make("list_buckets")
-    s3.make("list_buckets", {})
+    s3.send("list_buckets")
+    s3.send("list_buckets", {})
     // @ts-expect-error Bucket is required
-    s3.make("create_bucket")
+    s3.send("create_bucket")
     // @ts-expect-error Bucket is required
-    s3.make("create_bucket", {})
+    s3.send("create_bucket", {})
   })
 
   it("rejects unknown commands and input fields", () => {
     // @ts-expect-error no such command
-    s3.make("create_bukket", { Bucket: "b" })
+    s3.send("create_bukket", { Bucket: "b" })
     // @ts-expect-error unknown input field
-    s3.make("create_bucket", { Bucket: "b", Buckett: "b" })
+    s3.send("create_bucket", { Bucket: "b", Buckett: "b" })
   })
 })
 
 describe("errors", () => {
-  it("narrows the cause to the documented exception", () => {
-    s3.make("create_bucket", { Bucket: "b" }).pipe(
-      Effect.catchIf(
-        (error) => error.$is("BucketAlreadyExists"),
-        (error) => {
-          expectTypeOf(error.cause).toExtend<S3Sdk.BucketAlreadyExists>()
-          expectTypeOf(error.cause.name).toEqualTypeOf<"BucketAlreadyExists">()
-          expectTypeOf(error.command).toEqualTypeOf<"create_bucket">()
-          return Effect.void
-        }
-      )
+  it("are tagged per exception, with the SDK exception as cause", () => {
+    s3.send("create_bucket", { Bucket: "b" }).pipe(
+      Effect.catchTag("BucketAlreadyExists", (error) => {
+        expectTypeOf(error).toEqualTypeOf<s3.BucketAlreadyExists>()
+        expectTypeOf(error.cause).toEqualTypeOf<S3Sdk.BucketAlreadyExists>()
+        expectTypeOf(error.command).toEqualTypeOf<s3.S3Method>()
+        return Effect.void
+      }),
+      Effect.catchTag("S3Error", (error) => {
+        expectTypeOf(error.code).toEqualTypeOf<string>()
+        expectTypeOf(error.cause).toEqualTypeOf<S3Sdk.S3ServiceException>()
+        return Effect.void
+      })
     )
   })
 
-  it("only accepts exceptions documented for the command in $is", () => {
-    s3.make("create_bucket", { Bucket: "b" }).pipe(
-      // @ts-expect-error NoSuchKey is not documented for create_bucket
-      Effect.catchIf((error) => error.$is("NoSuchKey"), () => Effect.void)
-    )
-    // list_buckets documents no exceptions
-    // @ts-expect-error nothing to narrow to
-    s3.make("list_buckets").pipe(Effect.catchIf((error) => error.$is("NoSuchKey"), () => Effect.void))
+  it("only offers the exceptions documented for the command", () => {
+    // @ts-expect-error NoSuchKey is not documented for create_bucket
+    s3.send("create_bucket", { Bucket: "b" }).pipe(Effect.catchTag("NoSuchKey", () => Effect.void))
+    // @ts-expect-error list_buckets documents no exceptions
+    s3.send("list_buckets").pipe(Effect.catchTag("NoSuchKey", () => Effect.void))
   })
 
-  it("accepts any exception of the client in is", () => {
-    s3.make("list_buckets").pipe(
-      Effect.catchIf(
-        (error) => error.is("NoSuchKey"),
-        (error) => {
-          expectTypeOf(error.cause).toExtend<S3Sdk.NoSuchKey>()
-          expectTypeOf(error.cause.name).toEqualTypeOf<"NoSuchKey">()
-          return Effect.void
-        }
-      )
-    )
-    // @ts-expect-error not an S3 exception
-    s3.make("list_buckets").pipe(Effect.catchIf((error) => error.is("ConditionalCheckFailedException"), () => Effect.void))
-  })
-
-  it("exposes SDK metadata", () => {
-    expectTypeOf<s3.S3Error["fault"]>().toEqualTypeOf<"client" | "server">()
-    expectTypeOf<s3.S3Error["isRetryable"]>().toEqualTypeOf<boolean>()
-    expectTypeOf<s3.S3Error["statusCode"]>().toEqualTypeOf<number | undefined>()
+  it("share the SDK metadata across every class", () => {
+    expectTypeOf<s3.S3Errors["fault"]>().toEqualTypeOf<"client" | "server">()
+    expectTypeOf<s3.S3Errors["isRetryable"]>().toEqualTypeOf<boolean>()
+    expectTypeOf<s3.S3Errors["statusCode"]>().toEqualTypeOf<number | undefined>()
+    expectTypeOf<s3.S3MethodError<"get_object">>().toEqualTypeOf<s3.InvalidObjectState | s3.NoSuchKey | s3.S3Error>()
   })
 })
 
 describe("paginate", () => {
   it("streams the output of paginated commands", () => {
     expectTypeOf(s3.paginate("list_objects_v2", { Bucket: "b" })).toEqualTypeOf<
-      Stream.Stream<S3Sdk.ListObjectsV2CommandOutput, s3.S3Error<"list_objects_v2">, s3.S3Client>
+      Stream.Stream<S3Sdk.ListObjectsV2CommandOutput, s3.NoSuchBucket | s3.S3Error, s3.S3Client>
     >()
     s3.paginate("list_buckets")
     s3.paginate("list_buckets", {}, { pageSize: 10 })
@@ -104,7 +97,7 @@ describe("paginate", () => {
 describe("waitUntil", () => {
   it("types the input of the waiter", () => {
     expectTypeOf(dynamodb.waitUntil("table_exists", { TableName: "t" }, { maxWaitTime: "1 minute" })).toEqualTypeOf<
-      Effect.Effect<void, dynamodb.DynamoDBWaiterError<"table_exists">, dynamodb.DynamoDBClient>
+      Effect.Effect<void, dynamodb.DynamoDBWaiterError, dynamodb.DynamoDBClient>
     >()
     expectTypeOf<s3.S3Waiter>().toEqualTypeOf<"bucket_exists" | "bucket_not_exists" | "object_exists" | "object_not_exists">()
   })
@@ -133,25 +126,25 @@ describe("presign", () => {
 })
 
 describe("dynamodb_document", () => {
-  it("accepts native types and raises DynamoDB exceptions", () => {
-    expectTypeOf(dynamodb_document.make("get", { TableName: "t", Key: { id: "1" } })).toEqualTypeOf<
+  it("accepts native types and raises DynamoDB exceptions as its own classes", () => {
+    expectTypeOf(dynamodb_document.send("get", { TableName: "t", Key: { id: "1" } })).toEqualTypeOf<
       Effect.Effect<
         DocumentSdk.GetCommandOutput,
-        dynamodb_document.DynamoDBDocumentError<"get">,
+        dynamodb_document.DynamoDBDocumentMethodError<"get">,
         dynamodb_document.DynamoDBDocumentClient
       >
     >()
+    expectTypeOf<dynamodb_document.ResourceNotFoundException>().toExtend<
+      dynamodb_document.DynamoDBDocumentMethodError<"get">
+    >()
     // @ts-expect-error Key is required
-    dynamodb_document.make("get", { TableName: "t" })
+    dynamodb_document.send("get", { TableName: "t" })
 
-    dynamodb_document.make("get", { TableName: "t", Key: { id: "1" } }).pipe(
-      Effect.catchIf(
-        (error) => error.$is("ResourceNotFoundException"),
-        (error) => {
-          expectTypeOf(error.cause).toExtend<DynamoDBSdk.ResourceNotFoundException>()
-          return Effect.void
-        }
-      )
+    dynamodb_document.send("get", { TableName: "t", Key: { id: "1" } }).pipe(
+      Effect.catchTag("ResourceNotFoundException", (error) => {
+        expectTypeOf(error.cause).toEqualTypeOf<DynamoDBSdk.ResourceNotFoundException>()
+        return Effect.void
+      })
     )
   })
 
@@ -162,11 +155,11 @@ describe("dynamodb_document", () => {
   })
 })
 
-describe("makeClients", () => {
+describe("layer", () => {
   it("provides every client", () => {
-    expectTypeOf(makeClients()).toEqualTypeOf<
+    expectTypeOf(layer()).toEqualTypeOf<
       Layer.Layer<dynamodb.DynamoDBClient | dynamodb_document.DynamoDBDocumentClient | s3.S3Client | sqs.SQSClient>
     >()
-    makeClients({ dynamodb_document: { marshallOptions: { removeUndefinedValues: true } } })
+    layer({ dynamodb_document: { marshallOptions: { removeUndefinedValues: true } } })
   })
 })

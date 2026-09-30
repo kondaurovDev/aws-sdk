@@ -11,125 +11,142 @@ import * as Data from "effect/Data"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
+import type * as Scope from "effect/Scope"
 import * as Stream from "effect/Stream"
 
 /** The \`@aws-sdk/client-acme\` client, provided by {@link AcmeClient.layer}. */
 export class AcmeClient extends Context.Service<AcmeClient, Sdk.AcmeClient>()(
   "@effect-ak/aws-sdk/AcmeClient"
 ) {
-  /**
-   * Creates the SDK client when the layer is built and destroys it when the
-   * layer is released.
-   */
-  static readonly layer = (config?: Sdk.AcmeClientConfig): Layer.Layer<AcmeClient> =>
-    Layer.effect(
-      AcmeClient,
-      Effect.acquireRelease(
-        Effect.sync(() => new Sdk.AcmeClient({ region: "eu-west-1", ...config })),
-        (client) => Effect.sync(() => client.destroy())
-      )
+  /** Creates the SDK client; it is destroyed when the scope closes. */
+  static readonly make = (
+    config?: Sdk.AcmeClientConfig
+  ): Effect.Effect<Sdk.AcmeClient, never, Scope.Scope> =>
+    Effect.acquireRelease(
+      Effect.sync(() => new Sdk.AcmeClient({ region: "eu-west-1", ...config })),
+      (client) => Effect.sync(() => client.destroy())
     )
+
+  static readonly layer = (config?: Sdk.AcmeClientConfig): Layer.Layer<AcmeClient> =>
+    Layer.effect(AcmeClient, AcmeClient.make(config))
 }
 
-/** Every modeled Acme service exception, by name. */
-export type AcmeErrors = {
-  AccessDeniedException: Sdk.AccessDeniedException
-  ThingNotFound: Sdk.ThingNotFound
+interface AcmeErrorProps {
+  readonly message: string
+  /** The exception thrown by the SDK */
+  readonly cause: Sdk.AcmeServiceException
+  /** The command that failed */
+  readonly command: AcmeMethod
 }
 
-/** [input, output, documented exception names] of every Acme command. */
+/** Base of every Acme error: a tagged error around the SDK exception and its metadata. */
+const acmeException = <Tag extends string>(tag: Tag) =>
+  class extends Data.TaggedError(tag)<AcmeErrorProps> {
+    /** The SDK marks the exception as retryable: throttling or a transient server error. */
+    get isRetryable(): boolean {
+      return this.cause.$retryable !== undefined
+    }
+
+    /** The request was throttled; retry with backoff. */
+    get isThrottling(): boolean {
+      return this.cause.$retryable?.throttling === true
+    }
+
+    /** Whether the client (4xx) or the service (5xx) is at fault, per the SDK. */
+    get fault(): "client" | "server" {
+      return this.cause.$fault
+    }
+
+    get statusCode(): number | undefined {
+      return this.cause.$metadata.httpStatusCode
+    }
+
+    get requestId(): string | undefined {
+      return this.cause.$metadata.requestId
+    }
+  }
+
+export class AccessDeniedException extends acmeException("AccessDeniedException") {
+  declare readonly cause: Sdk.AccessDeniedException
+}
+export class ThingNotFound extends acmeException("ThingNotFound") {
+  declare readonly cause: Sdk.ThingNotFound
+}
+
+/**
+ * Any other Acme service exception: one the SDK does not document for the
+ * command, or one unknown to the SDK model. \`code\` names it.
+ */
+export class AcmeError extends acmeException("AcmeError") {
+  get code(): string {
+    return this.cause.name
+  }
+}
+
+/** Every error \`send\` can fail with. */
+export type AcmeErrors = AccessDeniedException | ThingNotFound | AcmeError
+
+/** [input, output, documented exceptions] of every Acme command. */
 type AcmeApi = {
   /** Gets a thing. */
-  get_thing: [Sdk.GetThingCommandInput, Sdk.GetThingCommandOutput, "AccessDeniedException" | "ThingNotFound"]
+  get_thing: [Sdk.GetThingCommandInput, Sdk.GetThingCommandOutput, AccessDeniedException | ThingNotFound]
   list_things: [Sdk.ListThingsCommandInput, Sdk.ListThingsCommandOutput, never]
 }
 
 export type AcmeMethod = keyof AcmeApi
 export type AcmeMethodInput<M extends AcmeMethod> = AcmeApi[M][0]
 export type AcmeMethodOutput<M extends AcmeMethod> = AcmeApi[M][1]
-/** Names of the exceptions documented for method \`M\`. */
-export type AcmeMethodError<M extends AcmeMethod> = AcmeApi[M][2]
+/** The exceptions documented for method \`M\`, plus {@link AcmeError} for any other. */
+export type AcmeMethodError<M extends AcmeMethod> = AcmeApi[M][2] | AcmeError
 /** The input may be omitted when none of its fields is required. */
 export type AcmeMethodArgs<M extends AcmeMethod, Options = never> = {} extends AcmeMethodInput<M>
   ? [input?: AcmeMethodInput<M>, ...options: [Options] extends [never] ? [] : [options?: Options]]
   : [input: AcmeMethodInput<M>, ...options: [Options] extends [never] ? [] : [options?: Options]]
-
-/**
- * A modeled Acme service exception raised by {@link make}. Failures outside
- * of the service model (network, credentials, ...) are defects.
- */
-export class AcmeError<M extends AcmeMethod = AcmeMethod> extends Data.TaggedError("AcmeError")<{
-  readonly message: string
-  readonly cause: Sdk.AcmeServiceException
-  readonly command: AcmeMethod
-}> {
-  declare readonly command: M
-
-  /** Narrows to one of the exceptions documented for the failed command. */
-  $is<N extends AcmeMethodError<M>>(
-    name: N
-  ): this is AcmeError<M> & { readonly cause: AcmeErrors[N & keyof AcmeErrors] } {
-    return this.cause.name === name
-  }
-
-  /** Narrows to any modeled Acme exception. */
-  is<N extends keyof AcmeErrors>(name: N): this is AcmeError<M> & { readonly cause: AcmeErrors[N] } {
-    return this.cause.name === name
-  }
-
-  /** The SDK marks the exception as retryable: throttling or a transient server error. */
-  get isRetryable(): boolean {
-    return this.cause.$retryable !== undefined
-  }
-
-  /** The request was throttled; retry with backoff. */
-  get isThrottling(): boolean {
-    return this.cause.$retryable?.throttling === true
-  }
-
-  /** Whether the client (4xx) or the service (5xx) is at fault, per the SDK. */
-  get fault(): "client" | "server" {
-    return this.cause.$fault
-  }
-
-  get statusCode(): number | undefined {
-    return this.cause.$metadata.httpStatusCode
-  }
-
-  get requestId(): string | undefined {
-    return this.cause.$metadata.requestId
-  }
-}
-
-const toAcmeError = <M extends AcmeMethod>(command: M, cause: unknown): AcmeError<M> => {
-  if (cause instanceof Sdk.AcmeServiceException) {
-    return new AcmeError<M>({ message: \`\${command}: \${cause.name}: \${cause.message}\`, cause, command })
-  }
-  // Rethrowing turns anything outside the service model into a defect
-  throw cause
-}
 
 const AcmeCommands: { readonly [M in AcmeMethod]: new (input: AcmeMethodInput<M>) => unknown } = {
   get_thing: Sdk.GetThingCommand,
   list_things: Sdk.ListThingsCommand,
 }
 
+/** Exception names documented per command; any other one is raised as AcmeError. */
+const AcmeCommandErrors: { readonly [M in AcmeMethod]: ReadonlyArray<string> } = {
+  get_thing: ["AccessDeniedException","ThingNotFound"],
+  list_things: [],
+}
+
+const AcmeErrorClasses: Record<string, (new (props: AcmeErrorProps) => AcmeErrors) | undefined> = {
+  AccessDeniedException,
+  ThingNotFound,
+}
+
+const toAcmeError = <M extends AcmeMethod>(command: M, cause: unknown): AcmeMethodError<M> => {
+  // Rethrowing turns anything outside the service model into a defect
+  if (!(cause instanceof Sdk.AcmeServiceException)) throw cause
+  const ErrorClass =
+    (AcmeCommandErrors[command].includes(cause.name) ? AcmeErrorClasses[cause.name] : undefined) ?? AcmeError
+  return new ErrorClass({
+    message: \`\${command}: \${cause.name}: \${cause.message}\`,
+    cause,
+    command
+  }) as AcmeMethodError<M>
+}
+
 /**
- * Runs the given Acme command. Interrupting the effect aborts the HTTP request.
+ * Sends the given Acme command. Interrupting the effect aborts the HTTP request.
  *
  * @example
  * \`\`\`ts
  * import { acme } from "./generated/index.js"
  *
- * const program = acme.make("get_thing", { ... }).pipe(
+ * const program = acme.send("get_thing", { ... }).pipe(
  *   Effect.provide(acme.AcmeClient.layer())
  * )
  * \`\`\`
  */
-export const make = <M extends AcmeMethod>(
+export const send = <M extends AcmeMethod>(
   command: M,
   ...[input]: AcmeMethodArgs<M>
-): Effect.Effect<AcmeMethodOutput<M>, AcmeError<M>, AcmeClient> =>
+): Effect.Effect<AcmeMethodOutput<M>, AcmeMethodError<M>, AcmeClient> =>
   Effect.gen(function* () {
     const client = yield* AcmeClient
     const sdkCommand = new AcmeCommands[command]((input ?? {}) as AcmeMethodInput<M>)
@@ -185,7 +202,7 @@ export interface AcmePaginateOptions {
 export const paginate = <M extends AcmePaginated>(
   command: M,
   ...[input, options]: AcmeMethodArgs<M, AcmePaginateOptions>
-): Stream.Stream<AcmeMethodOutput<M>, AcmeError<M>, AcmeClient> =>
+): Stream.Stream<AcmeMethodOutput<M>, AcmeMethodError<M>, AcmeClient> =>
   Stream.unwrap(
     Effect.map(AcmeClient, (client) => {
       const controller = new AbortController()
@@ -250,7 +267,7 @@ export interface AcmeWaitOptions {
 }
 
 /** The awaited state was not reached. */
-export class AcmeWaiterError<W extends AcmeWaiter = AcmeWaiter> extends Data.TaggedError("AcmeWaiterError")<{
+export class AcmeWaiterError extends Data.TaggedError("AcmeWaiterError")<{
   readonly message: string
   readonly waiter: AcmeWaiter
   /** \`TIMEOUT\` after \`maxWaitTime\`; \`FAILURE\` when a state the waiter cannot recover from was observed */
@@ -258,11 +275,9 @@ export class AcmeWaiterError<W extends AcmeWaiter = AcmeWaiter> extends Data.Tag
   /** The last response or exception the SDK observed, when it reported one */
   readonly reason: unknown
   readonly cause: Error
-}> {
-  declare readonly waiter: W
-}
+}> {}
 
-const toAcmeWaiterError = <W extends AcmeWaiter>(waiter: W, cause: unknown): AcmeWaiterError<W> => {
+const toAcmeWaiterError = (waiter: AcmeWaiter, cause: unknown): AcmeWaiterError => {
   // The waiter only aborts when the effect is interrupted; an invalid
   // configuration (maxWaitTime below minDelay, ...) is a defect
   if (!(cause instanceof Error) || cause.name === "AbortError" || cause.message.startsWith("WaiterConfiguration.")) {
@@ -274,7 +289,7 @@ const toAcmeWaiterError = <W extends AcmeWaiter>(waiter: W, cause: unknown): Acm
     details = JSON.parse(cause.message)
   } catch {}
   const state = cause.name === "TimeoutError" || details.state === "TIMEOUT" ? "TIMEOUT" : "FAILURE"
-  return new AcmeWaiterError<W>({
+  return new AcmeWaiterError({
     message: state === "TIMEOUT" ? \`\${waiter}: not reached within maxWaitTime\` : \`\${waiter}: cannot be reached\`,
     waiter,
     state,
@@ -302,7 +317,7 @@ export const waitUntil = <W extends AcmeWaiter>(
   waiter: W,
   input: AcmeWaiterInput<W>,
   options: AcmeWaitOptions
-): Effect.Effect<void, AcmeWaiterError<W>, AcmeClient> =>
+): Effect.Effect<void, AcmeWaiterError, AcmeClient> =>
   Effect.gen(function* () {
     const client = yield* AcmeClient
     yield* Effect.tryPromise({
@@ -352,118 +367,134 @@ import { AcmeClient } from "./acme.js"
 export class AcmeDocumentClient extends Context.Service<AcmeDocumentClient, Sdk.AcmeDocumentClient>()(
   "@effect-ak/aws-sdk/AcmeDocumentClient"
 ) {
-  /**
-   * Wraps the AcmeClient from the context. Its lifecycle stays
-   * with that client's layer.
-   */
+  /** Wraps the AcmeClient from the context. Its lifecycle stays with that client. */
+  static readonly make = (
+    config?: Sdk.TranslateConfig
+  ): Effect.Effect<Sdk.AcmeDocumentClient, never, AcmeClient> =>
+    Effect.map(AcmeClient, (client) => Sdk.AcmeDocumentClient.from(client, config))
+
   static readonly layer = (
     config?: Sdk.TranslateConfig
   ): Layer.Layer<AcmeDocumentClient, never, AcmeClient> =>
-    Layer.effect(
-      AcmeDocumentClient,
-      Effect.map(AcmeClient, (client) => Sdk.AcmeDocumentClient.from(client, config))
-    )
+    Layer.effect(AcmeDocumentClient, AcmeDocumentClient.make(config))
 }
 
-/** Every modeled AcmeDocument service exception, by name. */
-export type AcmeDocumentErrors = {
-  AccessDeniedException: Base.AccessDeniedException
-  ThingNotFound: Base.ThingNotFound
+interface AcmeDocumentErrorProps {
+  readonly message: string
+  /** The exception thrown by the SDK */
+  readonly cause: Base.AcmeServiceException
+  /** The command that failed */
+  readonly command: AcmeDocumentMethod
 }
 
-/** [input, output, documented exception names] of every AcmeDocument command. */
+/** Base of every AcmeDocument error: a tagged error around the SDK exception and its metadata. */
+const acmeDocumentException = <Tag extends string>(tag: Tag) =>
+  class extends Data.TaggedError(tag)<AcmeDocumentErrorProps> {
+    /** The SDK marks the exception as retryable: throttling or a transient server error. */
+    get isRetryable(): boolean {
+      return this.cause.$retryable !== undefined
+    }
+
+    /** The request was throttled; retry with backoff. */
+    get isThrottling(): boolean {
+      return this.cause.$retryable?.throttling === true
+    }
+
+    /** Whether the client (4xx) or the service (5xx) is at fault, per the SDK. */
+    get fault(): "client" | "server" {
+      return this.cause.$fault
+    }
+
+    get statusCode(): number | undefined {
+      return this.cause.$metadata.httpStatusCode
+    }
+
+    get requestId(): string | undefined {
+      return this.cause.$metadata.requestId
+    }
+  }
+
+export class AccessDeniedException extends acmeDocumentException("AccessDeniedException") {
+  declare readonly cause: Base.AccessDeniedException
+}
+export class ThingNotFound extends acmeDocumentException("ThingNotFound") {
+  declare readonly cause: Base.ThingNotFound
+}
+
+/**
+ * Any other AcmeDocument service exception: one the SDK does not document for the
+ * command, or one unknown to the SDK model. \`code\` names it.
+ */
+export class AcmeDocumentError extends acmeDocumentException("AcmeDocumentError") {
+  get code(): string {
+    return this.cause.name
+  }
+}
+
+/** Every error \`send\` can fail with. */
+export type AcmeDocumentErrors = AccessDeniedException | ThingNotFound | AcmeDocumentError
+
+/** [input, output, documented exceptions] of every AcmeDocument command. */
 type AcmeDocumentApi = {
   /** Gets a thing. */
-  get: [Sdk.GetCommandInput, Sdk.GetCommandOutput, "AccessDeniedException" | "ThingNotFound"]
+  get: [Sdk.GetCommandInput, Sdk.GetCommandOutput, AccessDeniedException | ThingNotFound]
   list: [Sdk.ListCommandInput, Sdk.ListCommandOutput, never]
 }
 
 export type AcmeDocumentMethod = keyof AcmeDocumentApi
 export type AcmeDocumentMethodInput<M extends AcmeDocumentMethod> = AcmeDocumentApi[M][0]
 export type AcmeDocumentMethodOutput<M extends AcmeDocumentMethod> = AcmeDocumentApi[M][1]
-/** Names of the exceptions documented for method \`M\`. */
-export type AcmeDocumentMethodError<M extends AcmeDocumentMethod> = AcmeDocumentApi[M][2]
+/** The exceptions documented for method \`M\`, plus {@link AcmeDocumentError} for any other. */
+export type AcmeDocumentMethodError<M extends AcmeDocumentMethod> = AcmeDocumentApi[M][2] | AcmeDocumentError
 /** The input may be omitted when none of its fields is required. */
 export type AcmeDocumentMethodArgs<M extends AcmeDocumentMethod, Options = never> = {} extends AcmeDocumentMethodInput<M>
   ? [input?: AcmeDocumentMethodInput<M>, ...options: [Options] extends [never] ? [] : [options?: Options]]
   : [input: AcmeDocumentMethodInput<M>, ...options: [Options] extends [never] ? [] : [options?: Options]]
-
-/**
- * A modeled AcmeDocument service exception raised by {@link make}. Failures outside
- * of the service model (network, credentials, ...) are defects.
- */
-export class AcmeDocumentError<M extends AcmeDocumentMethod = AcmeDocumentMethod> extends Data.TaggedError("AcmeDocumentError")<{
-  readonly message: string
-  readonly cause: Base.AcmeServiceException
-  readonly command: AcmeDocumentMethod
-}> {
-  declare readonly command: M
-
-  /** Narrows to one of the exceptions documented for the failed command. */
-  $is<N extends AcmeDocumentMethodError<M>>(
-    name: N
-  ): this is AcmeDocumentError<M> & { readonly cause: AcmeDocumentErrors[N & keyof AcmeDocumentErrors] } {
-    return this.cause.name === name
-  }
-
-  /** Narrows to any modeled AcmeDocument exception. */
-  is<N extends keyof AcmeDocumentErrors>(name: N): this is AcmeDocumentError<M> & { readonly cause: AcmeDocumentErrors[N] } {
-    return this.cause.name === name
-  }
-
-  /** The SDK marks the exception as retryable: throttling or a transient server error. */
-  get isRetryable(): boolean {
-    return this.cause.$retryable !== undefined
-  }
-
-  /** The request was throttled; retry with backoff. */
-  get isThrottling(): boolean {
-    return this.cause.$retryable?.throttling === true
-  }
-
-  /** Whether the client (4xx) or the service (5xx) is at fault, per the SDK. */
-  get fault(): "client" | "server" {
-    return this.cause.$fault
-  }
-
-  get statusCode(): number | undefined {
-    return this.cause.$metadata.httpStatusCode
-  }
-
-  get requestId(): string | undefined {
-    return this.cause.$metadata.requestId
-  }
-}
-
-const toAcmeDocumentError = <M extends AcmeDocumentMethod>(command: M, cause: unknown): AcmeDocumentError<M> => {
-  if (cause instanceof Base.AcmeServiceException) {
-    return new AcmeDocumentError<M>({ message: \`\${command}: \${cause.name}: \${cause.message}\`, cause, command })
-  }
-  // Rethrowing turns anything outside the service model into a defect
-  throw cause
-}
 
 const AcmeDocumentCommands: { readonly [M in AcmeDocumentMethod]: new (input: AcmeDocumentMethodInput<M>) => unknown } = {
   get: Sdk.GetCommand,
   list: Sdk.ListCommand,
 }
 
+/** Exception names documented per command; any other one is raised as AcmeDocumentError. */
+const AcmeDocumentCommandErrors: { readonly [M in AcmeDocumentMethod]: ReadonlyArray<string> } = {
+  get: ["AccessDeniedException","ThingNotFound"],
+  list: [],
+}
+
+const AcmeDocumentErrorClasses: Record<string, (new (props: AcmeDocumentErrorProps) => AcmeDocumentErrors) | undefined> = {
+  AccessDeniedException,
+  ThingNotFound,
+}
+
+const toAcmeDocumentError = <M extends AcmeDocumentMethod>(command: M, cause: unknown): AcmeDocumentMethodError<M> => {
+  // Rethrowing turns anything outside the service model into a defect
+  if (!(cause instanceof Base.AcmeServiceException)) throw cause
+  const ErrorClass =
+    (AcmeDocumentCommandErrors[command].includes(cause.name) ? AcmeDocumentErrorClasses[cause.name] : undefined) ?? AcmeDocumentError
+  return new ErrorClass({
+    message: \`\${command}: \${cause.name}: \${cause.message}\`,
+    cause,
+    command
+  }) as AcmeDocumentMethodError<M>
+}
+
 /**
- * Runs the given AcmeDocument command. Interrupting the effect aborts the HTTP request.
+ * Sends the given AcmeDocument command. Interrupting the effect aborts the HTTP request.
  *
  * @example
  * \`\`\`ts
  * import { acme_document } from "./generated/index.js"
  *
- * const program = acme_document.make("get", { ... }).pipe(
+ * const program = acme_document.send("get", { ... }).pipe(
  *   Effect.provide(acme_document.AcmeDocumentClient.layer())
  * )
  * \`\`\`
  */
-export const make = <M extends AcmeDocumentMethod>(
+export const send = <M extends AcmeDocumentMethod>(
   command: M,
   ...[input]: AcmeDocumentMethodArgs<M>
-): Effect.Effect<AcmeDocumentMethodOutput<M>, AcmeDocumentError<M>, AcmeDocumentClient> =>
+): Effect.Effect<AcmeDocumentMethodOutput<M>, AcmeDocumentMethodError<M>, AcmeDocumentClient> =>
   Effect.gen(function* () {
     const client = yield* AcmeDocumentClient
     const sdkCommand = new AcmeDocumentCommands[command]((input ?? {}) as AcmeDocumentMethodInput<M>)
@@ -519,7 +550,7 @@ export interface AcmeDocumentPaginateOptions {
 export const paginate = <M extends AcmeDocumentPaginated>(
   command: M,
   ...[input, options]: AcmeDocumentMethodArgs<M, AcmeDocumentPaginateOptions>
-): Stream.Stream<AcmeDocumentMethodOutput<M>, AcmeDocumentError<M>, AcmeDocumentClient> =>
+): Stream.Stream<AcmeDocumentMethodOutput<M>, AcmeDocumentMethodError<M>, AcmeDocumentClient> =>
   Stream.unwrap(
     Effect.map(AcmeDocumentClient, (client) => {
       const controller = new AbortController()
@@ -575,7 +606,7 @@ export interface ClientsConfig {
 }
 
 /** A single layer providing every generated client. */
-export const makeClients = (config?: ClientsConfig) =>
+export const layer = (config?: ClientsConfig) =>
   Layer.mergeAll(
     acme.AcmeClient.layer(config?.acme),
     cloudwatch_logs.CloudWatchLogsClient.layer(config?.cloudwatch_logs),

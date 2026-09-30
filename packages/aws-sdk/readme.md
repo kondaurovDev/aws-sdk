@@ -1,20 +1,51 @@
-# Effect AWS SDK
+# @effect-ak/aws-sdk
 
-TypeScript-first AWS development with [Effect](https://effect.website/).
+Generates [Effect](https://effect.website/) wrappers for the AWS SDK v3 clients installed in your project.
 
-[![NPM Version](https://img.shields.io/npm/v/%40effect-ak%2Faws-sdk)](https://www.npmjs.com/package/@effect-ak/aws-sdk)
-![NPM Downloads](https://img.shields.io/npm/dw/%40effect-ak%2Faws-sdk)
+[![npm](https://img.shields.io/npm/v/%40effect-ak%2Faws-sdk)](https://www.npmjs.com/package/@effect-ak/aws-sdk)
+[![Build](https://github.com/kondaurovDev/aws-sdk/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/kondaurovDev/aws-sdk/actions/workflows/build.yml)
+[![Probe: every AWS client](https://github.com/kondaurovDev/aws-sdk/actions/workflows/probe.yml/badge.svg)](https://github.com/kondaurovDev/aws-sdk/actions/workflows/probe.yml)
 
-A code generator that wraps the AWS SDK v3 clients installed in your project into Effect services. The official SDK keeps doing the work (signing, protocols, endpoints, retries); the generated code adds the Effect layer on top:
+```typescript
+const program = Effect.gen(function* () {
+  yield* s3.send("create_bucket", { Bucket: "reports" }).pipe(
+    Effect.catchTag("BucketAlreadyOwnedByYou", () => Effect.void)
+  )
+  yield* dynamodb.waitUntil("table_exists", { TableName: "users" }, { maxWaitTime: "2 minutes" })
+  const user = yield* dynamodb_document.send("get", { TableName: "users", Key: { id: "42" } })
+  const keys = yield* s3.paginate("list_objects_v2", { Bucket: "reports" }).pipe(
+    Stream.flatMap((page) => Stream.fromIterable(page.Contents ?? [])),
+    Stream.runCollect
+  )
+  const link = yield* s3.presign("get_object", { Bucket: "reports", Key: "q3.pdf" }, { expiresIn: 3600 })
+  return { user: user.Item, keys, link }
+}).pipe(Effect.provide(layer()))
+```
 
-- One typed `make(command, input)` per client, with input and output inferred per command and the command's AWS documentation in completion popups
-- Typed errors for the exceptions each command documents, narrowed with `$is`, plus the SDK's retry metadata
-- `paginate` as a `Stream`, `waitUntil` for SDK waiters, `presign` for S3, and the DynamoDB document client
-- Scoped client layers, request cancellation on interruption, a tracing span per call
-
-The generator is verified daily against every published `@aws-sdk/client-*` package (435 at the time of writing): all of them generate, and the generated code typechecks.
+Every command name, input, output and documented exception above is typed, straight from the SDK you have installed.
 
 > Version 2 generates code for **Effect 4**. With Effect 3, use `@effect-ak/aws-sdk@1`.
+
+## Why a generator
+
+- **The official SDK does the work.** Signing, protocols, endpoints, retries and every S3 corner case stay with `@aws-sdk/client-*`. The generated code only adds the Effect layer.
+- **The code is yours.** It lands in your repository, readable and editable, and imports nothing but `effect` and the SDK. There is no runtime dependency on this package.
+- **Any client, the day it ships.** The generator reads the declaration files of whatever `@aws-sdk/client-*` version you install, so new commands and services need no release on this side. It is verified daily against every published client package (435 at the time of writing): all of them generate and typecheck.
+- **The SDK ecosystem keeps working.** A generated layer holds a real SDK client, so [aws-sdk-client-mock](https://github.com/m-radzikowski/aws-sdk-client-mock), custom middleware, credential providers and OpenTelemetry instrumentation apply unchanged.
+
+## What you get
+
+| | |
+| --- | --- |
+| `send(command, input?)` | One function per client, every command as a string literal with its AWS documentation in the completion popup |
+| Tagged errors | One error class per SDK exception, so `Effect.catchTag("NoSuchKey", ...)` and `catchTags` work as everywhere else in Effect; the error channel of each command lists exactly the exceptions AWS documents for it |
+| SDK metadata on errors | `isRetryable`, `isThrottling`, `fault`, `statusCode`, `requestId`, and the SDK exception itself in `cause` |
+| `paginate(command, input?)` | A `Stream` of pages for every command the SDK has a paginator for; leaving early aborts the request in flight |
+| `waitUntil(waiter, input, options)` | SDK waiters as effects, with `Duration` inputs and a typed `TIMEOUT` / `FAILURE` error |
+| `presign(command, input?)` | Presigned S3 URLs, when `@aws-sdk/s3-request-presigner` is installed |
+| `dynamodb_document` | The DynamoDB document client with the same API, when `@aws-sdk/lib-dynamodb` is installed |
+| Layers | `XClient.layer(config)` creates and destroys the SDK client, `XClient.make(config)` is the scoped constructor behind it, `layer()` provides all clients |
+| Cancellation and tracing | Interruption aborts the HTTP request; every call runs in a span |
 
 ## Getting started
 
@@ -30,16 +61,10 @@ pnpm exec gen-aws-sdk
 import { Effect } from "effect"
 import { s3 } from "./generated/index.js"
 
-const program = Effect.gen(function* () {
-  yield* s3.make("create_bucket", { Bucket: "my-bucket" }).pipe(
-    Effect.catchIf(
-      (error) => error.$is("BucketAlreadyOwnedByYou"),
-      () => Effect.log("The bucket exists already")
-    )
-  )
-  const { Buckets = [] } = yield* s3.make("list_buckets")
-  return Buckets
-}).pipe(Effect.provide(s3.S3Client.layer({ region: "eu-central-1" })))
+const buckets = s3.send("list_buckets").pipe(
+  Effect.map(({ Buckets = [] }) => Buckets),
+  Effect.provide(s3.S3Client.layer({ region: "eu-central-1" }))
+)
 ```
 
 ## Configuration
@@ -71,35 +96,47 @@ For each client (here `s3`, from `@aws-sdk/client-s3`):
 
 | Export | |
 | --- | --- |
-| `make(command, input?)` | Runs a command: `Effect<Output, S3Error<command>, S3Client>`. The input may be omitted when no field is required |
-| `paginate(command, input?, options?)` | Streams the pages of a command the SDK has a paginator for: `Stream<Output, S3Error<command>, S3Client>` |
-| `waitUntil(waiter, input, { maxWaitTime })` | Polls an SDK waiter: `Effect<void, S3WaiterError<waiter>, S3Client>` |
+| `send(command, input?)` | Sends a command: `Effect<Output, S3MethodError<command>, S3Client>`. The input may be omitted when no field is required |
+| `paginate(command, input?, options?)` | Streams the pages of a command the SDK has a paginator for: `Stream<Output, S3MethodError<command>, S3Client>` |
+| `waitUntil(waiter, input, { maxWaitTime })` | Polls an SDK waiter: `Effect<void, S3WaiterError, S3Client>` |
 | `presign(command, input?, options?)` | S3 only: a presigned URL, `Effect<string, never, S3Client>` |
 | `S3Client` | The service holding the SDK client |
 | `S3Client.layer(config?)` | Creates the SDK client and destroys it when the layer is released |
-| `S3Error<M>` | A modeled service exception: `cause` is the SDK exception, `command` the failed command |
-| `S3WaiterError<W>` | The awaited state was not reached: `state` is `TIMEOUT` or `FAILURE` |
-| `S3Method`, `S3MethodInput<M>`, `S3MethodOutput<M>`, `S3MethodError<M>`, `S3Errors`, `S3Paginated`, `S3Waiter`, `S3WaiterInput<W>` | Helper types |
+| `S3Client.make(config?)` | The scoped constructor behind `layer`, for custom layers |
+| `NoSuchKey`, `NoSuchBucket`, ... | One tagged error class per modeled S3 exception; `cause` is the SDK exception |
+| `S3Error` | Any other S3 service exception; `code` names it |
+| `S3WaiterError` | The awaited state was not reached: `state` is `TIMEOUT` or `FAILURE` |
+| `S3Errors`, `S3MethodError<M>`, `S3Method`, `S3MethodInput<M>`, `S3MethodOutput<M>`, `S3Paginated`, `S3Waiter`, `S3WaiterInput<W>` | Helper types |
 
-`index.ts` re-exports every client as a namespace and adds `makeClients(config?)`, one layer with all clients:
+`index.ts` re-exports every client as a namespace and adds `layer(config?)`, one layer with all clients:
 
 ```typescript
-import { makeClients } from "./generated/index.js"
+import { layer } from "./generated/index.js"
 
-program.pipe(Effect.provide(makeClients({ s3: { region: "eu-central-1" } })))
+program.pipe(Effect.provide(layer({ s3: { region: "eu-central-1" } })))
 ```
 
 To use an SDK client you created yourself, provide it directly: `Layer.succeed(s3.S3Client, client)`.
 
 ### Errors
 
-`make` fails with `S3Error` when the SDK throws a modeled `S3ServiceException`:
+Each command fails with the exceptions AWS documents for it, as tagged error classes, plus `S3Error` for anything else:
 
-- `error.$is(name)` accepts only the exceptions documented for that command and narrows `error.cause` to the SDK exception class
-- `error.is(name)` accepts any S3 exception
-- `error.isRetryable`, `error.isThrottling`, `error.fault`, `error.statusCode` and `error.requestId` expose the SDK's metadata, e.g. for `Effect.retry({ while: (error) => error.isRetryable })`
+```typescript
+s3.send("get_object", { Bucket, Key }).pipe(
+  //     ^ Effect<GetObjectCommandOutput, NoSuchKey | InvalidObjectState | S3Error, S3Client>
+  Effect.catchTags({
+    NoSuchKey: () => Effect.succeed(undefined),
+    InvalidObjectState: (error) => Effect.fail(new Archived({ storageClass: error.cause.StorageClass }))
+  })
+)
+```
 
-Anything else (network failures, missing credentials, ...) is a defect. Interrupting the effect, e.g. with `Effect.timeout`, aborts the HTTP request.
+- `error.cause` is the SDK exception, narrowed to its class by `catchTag`; `error.command` names the command.
+- `S3Error` is raised for an exception the SDK does not document for that command, or one unknown to the SDK model; `error.code` is the exception name and `error.cause` the SDK's base exception. Types and runtime always agree: an undocumented `NoSuchBucket` arrives as `S3Error`, never as a class missing from the error channel.
+- Every class exposes the SDK's metadata: `isRetryable`, `isThrottling`, `fault`, `statusCode`, `requestId`, e.g. for `Effect.retry({ while: (error) => error.isRetryable })`.
+
+Anything outside the service model (network failures, missing credentials, ...) is a defect. Interrupting the effect, e.g. with `Effect.timeout`, aborts the HTTP request.
 
 ### Pagination
 
@@ -118,7 +155,7 @@ The SDK paginator follows the continuation tokens; leaving the stream early abor
 ### Waiters
 
 ```typescript
-yield* dynamodb.make("create_table", { TableName: "users", ... })
+yield* dynamodb.send("create_table", { TableName: "users", ... })
 yield* dynamodb.waitUntil("table_exists", { TableName: "users" }, { maxWaitTime: "2 minutes" })
 ```
 
@@ -137,25 +174,42 @@ const url = yield* s3.presign("get_object", { Bucket: "my-bucket", Key: "report.
 With `@aws-sdk/lib-dynamodb` installed next to `@aws-sdk/client-dynamodb`, the `dynamodb_document` module offers the same API over plain JavaScript values, and its errors are the DynamoDB exceptions typed per command:
 
 ```typescript
-import { dynamodb_document, makeClients } from "./generated/index.js"
+import { dynamodb_document, layer } from "./generated/index.js"
 
-const user = dynamodb_document.make("get", { TableName: "users", Key: { id: "1" } }).pipe(
+const user = dynamodb_document.send("get", { TableName: "users", Key: { id: "1" } }).pipe(
   Effect.map(({ Item }) => Item),
-  Effect.provide(makeClients({ dynamodb_document: { marshallOptions: { removeUndefinedValues: true } } }))
+  Effect.provide(layer({ dynamodb_document: { marshallOptions: { removeUndefinedValues: true } } }))
 )
 ```
 
-`dynamodb_document.DynamoDBDocumentClient.layer(translateConfig?)` wraps the `DynamoDBClient` from the context; `makeClients` wires both.
+`dynamodb_document.DynamoDBDocumentClient.layer(translateConfig?)` wraps the `DynamoDBClient` from the context; `layer()` wires both.
 
 ### Testing
 
 The generated code runs the real SDK client, so the SDK's own testing tools apply: pass a fake `requestHandler` in the layer config, or provide a client prepared with [aws-sdk-client-mock](https://github.com/m-radzikowski/aws-sdk-client-mock) through `Layer.succeed(s3.S3Client, client)`.
 
+## How it works
+
+`gen-aws-sdk` parses the declaration files of each installed client package. Command classes become the methods, the exception classes become tagged errors, the `@throws` annotations in each command's JSDoc decide its error channel, and the SDK's own paginators and waiters are wrapped rather than reimplemented. The output is plain TypeScript; nothing from this package runs in your application.
+
+Every day, the [probe workflow](https://github.com/kondaurovDev/aws-sdk/actions/workflows/probe.yml) installs the latest release of every `@aws-sdk/client-*` package, generates all of them and typechecks the result, so a change in the SDK's declaration files shows up here before it reaches you.
+
+## How it compares
+
+| | `@effect-ak/aws-sdk` | [`@effect-aws/*`](https://github.com/floydspace/effect-aws) | [`@distilled.cloud/aws`](https://github.com/alchemy-run/distilled) |
+| --- | --- | --- | --- |
+| Underneath | The official SDK client you install | The official SDK client | Its own runtime, generated from Smithy models |
+| Where the code lives | Generated into your repository | One published package per client | One published package for 200+ services |
+| Coverage | Any `@aws-sdk/client-*` package, at the version you install | The clients the maintainers publish | The services in the package |
+| Fits best | Projects already on the AWS SDK that want typed Effect wrappers with no new runtime | The same, without a generation step | Runtimes where the AWS SDK is too heavy, such as edge workers |
+
 ## Migrating from 1.x
 
 - Upgrade to Effect 4 and re-run `gen-aws-sdk`
+- `make(command, input)` → `send(command, input)`
+- `error.$is("NoSuchKey")` → `Effect.catchTag("NoSuchKey", ...)`; `S3Error<M>` is now the union `S3MethodError<M>` of tagged classes
 - `S3Client.Default(config)` → `S3Client.layer(config)`
-- `AllClientsDefault` → `makeClients()`
+- `AllClientsDefault` → `layer()`
 - The `postinstall` hook is gone: run `gen-aws-sdk` yourself
 
 ## License

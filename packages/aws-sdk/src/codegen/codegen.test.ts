@@ -77,9 +77,23 @@ describe("renderClient", () => {
   it("documents commands and types undocumented errors as never", () => {
     const code = renderClient(plain, { region: undefined })
     expect(code).toContain(
-      `  /** Gets a thing. */\n  get_thing: [Sdk.GetThingCommandInput, Sdk.GetThingCommandOutput, "AccessDeniedException" | "ThingNotFound"]`
+      `  /** Gets a thing. */\n  get_thing: [Sdk.GetThingCommandInput, Sdk.GetThingCommandOutput, AccessDeniedException | ThingNotFound]`
     )
     expect(code).toContain(`\n  list_things: [Sdk.ListThingsCommandInput, Sdk.ListThingsCommandOutput, never]`)
+  })
+
+  it("generates a tagged error class per modeled exception and a catch-all", () => {
+    const code = renderClient(plain, { region: undefined })
+    expect(code).toContain(`export class ThingNotFound extends acmeException("ThingNotFound") {\n  declare readonly cause: Sdk.ThingNotFound\n}`)
+    expect(code).toContain(`export class AcmeError extends acmeException("AcmeError")`)
+    expect(code).toContain(`export type AcmeErrors = AccessDeniedException | ThingNotFound | AcmeError`)
+    expect(code).toContain(`get_thing: ["AccessDeniedException","ThingNotFound"],`)
+  })
+
+  it("takes the exceptions of a document client from the base package", () => {
+    const code = renderClient(acmeDocument, { region: undefined })
+    expect(code).toContain(`declare readonly cause: Base.ThingNotFound`)
+    expect(code).toContain(`cause instanceof Base.AcmeServiceException`)
   })
 
   it("omits paginate, waitUntil and presign when the SDK offers none", () => {
@@ -100,7 +114,7 @@ describe("renderIndex", () => {
     expect(code).toContain(`import type { TranslateConfig } from "@aws-sdk/lib-acme"`)
     expect(code).toContain("readonly acme_document?: TranslateConfig")
     expect(code).toContain(
-      `  Layer.provideMerge(\n    Layer.mergeAll(\n      acme_document.AcmeDocumentClient.layer(config?.acme_document),\n    ),\n    Layer.mergeAll(\n      acme.AcmeClient.layer(config?.acme),\n    )\n  )`
+      `export const layer = (config?: ClientsConfig) =>\n  Layer.provideMerge(\n    Layer.mergeAll(\n      acme_document.AcmeDocumentClient.layer(config?.acme_document),\n    ),\n    Layer.mergeAll(\n      acme.AcmeClient.layer(config?.acme),\n    )\n  )`
     )
   })
 })

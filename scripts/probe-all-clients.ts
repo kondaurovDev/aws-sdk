@@ -26,7 +26,7 @@ const effectVersion = JSON.parse(
 ).version as string
 
 const listClients = async (): Promise<Array<string>> => {
-  const headers: Record<string, string> = { "user-agent": "effect-ak/aws-sdk probe" }
+  const headers: Record<string, string> = { "user-agent": "kondaurovDev/aws-sdk probe" }
   if (process.env.GITHUB_TOKEN) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`
   const response = await fetch("https://api.github.com/repos/aws/aws-sdk-js-v3/contents/clients?per_page=1000", {
     headers

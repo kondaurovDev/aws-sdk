@@ -3,7 +3,7 @@ import * as DynamoDBSdk from "@aws-sdk/client-dynamodb"
 import { describe, expect, it, vi } from "vitest"
 import { Cause, Effect, Exit, Layer, Stream } from "effect"
 
-import { dynamodb, dynamodb_document, makeClients, s3 } from "../src/generated/index.js"
+import { dynamodb, dynamodb_document, layer, s3 } from "../src/generated/index.js"
 import { listKeys } from "../src/main.js"
 import { dynamodbError, dynamodbJson, fakeAws, requestJson, s3Error, s3Xml, type Handle } from "./fake-aws.js"
 
@@ -41,7 +41,7 @@ describe("paginate", () => {
     expect(handle.mock.calls[0]![0].query["max-keys"]).toBe("5")
   })
 
-  it("fails with the typed error of the paginated command", async () => {
+  it("fails with the tagged error of the paginated command", async () => {
     const error = await Effect.runPromise(
       collect(s3.paginate("list_objects_v2", { Bucket: "missing" })).pipe(
         Effect.flip,
@@ -49,8 +49,8 @@ describe("paginate", () => {
       )
     )
 
+    expect(error._tag).toBe("NoSuchBucket")
     expect(error.command).toBe("list_objects_v2")
-    expect(error.$is("NoSuchBucket")).toBe(true)
   })
 
   it("aborts the request in flight when the consumer leaves", async () => {
@@ -84,7 +84,7 @@ describe("paginate", () => {
 
     const pages = await Effect.runPromise(
       collect(dynamodb_document.paginate("scan", { TableName: "t" })).pipe(
-        Effect.provide(makeClients({ dynamodb: fakeAws(handle) }))
+        Effect.provide(layer({ dynamodb: fakeAws(handle) }))
       )
     )
 
@@ -95,13 +95,13 @@ describe("paginate", () => {
 describe("waitUntil", () => {
   const fast = { maxWaitTime: "5 seconds", minDelay: "10 millis", maxDelay: "20 millis" } as const
   const table = (TableStatus: string) => dynamodbJson(200, { Table: { TableName: "t", TableStatus } })
-  const layer = (handle: Handle) => dynamodb.DynamoDBClient.layer(fakeAws(handle))
+  const withTable = (handle: Handle) => dynamodb.DynamoDBClient.layer(fakeAws(handle))
 
   it("polls until the awaited state is reached", async () => {
     const handle = vi.fn<Handle>().mockResolvedValueOnce(table("CREATING")).mockResolvedValue(table("ACTIVE"))
 
     await Effect.runPromise(
-      dynamodb.waitUntil("table_exists", { TableName: "t" }, fast).pipe(Effect.provide(layer(handle)))
+      dynamodb.waitUntil("table_exists", { TableName: "t" }, fast).pipe(Effect.provide(withTable(handle)))
     )
 
     expect(handle).toHaveBeenCalledTimes(2)
@@ -111,7 +111,7 @@ describe("waitUntil", () => {
     const error = await Effect.runPromise(
       dynamodb
         .waitUntil("table_exists", { TableName: "t" }, { ...fast, maxWaitTime: "300 millis" })
-        .pipe(Effect.flip, Effect.provide(layer(async () => table("CREATING"))))
+        .pipe(Effect.flip, Effect.provide(withTable(async () => table("CREATING"))))
     )
 
     expect(error).toBeInstanceOf(dynamodb.DynamoDBWaiterError)
@@ -124,7 +124,7 @@ describe("waitUntil", () => {
     const error = await Effect.runPromise(
       dynamodb.waitUntil("export_completed", { ExportArn: "arn" }, fast).pipe(
         Effect.flip,
-        Effect.provide(layer(async () => dynamodbJson(200, { ExportDescription: { ExportStatus: "FAILED" } })))
+        Effect.provide(withTable(async () => dynamodbJson(200, { ExportDescription: { ExportStatus: "FAILED" } })))
       )
     )
 
@@ -136,7 +136,7 @@ describe("waitUntil", () => {
     const result = await Effect.runPromise(
       dynamodb.waitUntil("table_exists", { TableName: "t" }, fast).pipe(
         Effect.timeoutOption("50 millis"),
-        Effect.provide(layer(() => new Promise(() => {})))
+        Effect.provide(withTable(() => new Promise(() => {})))
       )
     )
 
@@ -147,7 +147,7 @@ describe("waitUntil", () => {
     const exit = await Effect.runPromiseExit(
       dynamodb
         .waitUntil("table_exists", { TableName: "t" }, { maxWaitTime: "10 millis", minDelay: "1 second" })
-        .pipe(Effect.provide(layer(async () => table("ACTIVE"))))
+        .pipe(Effect.provide(withTable(async () => table("ACTIVE"))))
     )
 
     expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true)
@@ -188,8 +188,8 @@ describe("dynamodb_document", () => {
     const handle = vi.fn<Handle>(async () => dynamodbJson(200, { Item: { id: { S: "1" }, name: { S: "Alice" } } }))
 
     const output = await Effect.runPromise(
-      dynamodb_document.make("get", { TableName: "users", Key: { id: "1" } }).pipe(
-        Effect.provide(makeClients({ dynamodb: fakeAws(handle) }))
+      dynamodb_document.send("get", { TableName: "users", Key: { id: "1" } }).pipe(
+        Effect.provide(layer({ dynamodb: fakeAws(handle) }))
       )
     )
 
@@ -197,27 +197,27 @@ describe("dynamodb_document", () => {
     expect(requestJson(handle.mock.calls[0]![0])).toEqual({ TableName: "users", Key: { id: { S: "1" } } })
   })
 
-  it("raises the exceptions of the base client", async () => {
+  it("raises the exceptions of the base client as its own tagged errors", async () => {
     const error = await Effect.runPromise(
-      dynamodb_document.make("get", { TableName: "missing", Key: { id: "1" } }).pipe(
+      dynamodb_document.send("get", { TableName: "missing", Key: { id: "1" } }).pipe(
         Effect.flip,
-        Effect.provide(makeClients({ dynamodb: fakeAws(async () => dynamodbError("ResourceNotFoundException", "no")) }))
+        Effect.provide(layer({ dynamodb: fakeAws(async () => dynamodbError("ResourceNotFoundException", "no")) }))
       )
     )
 
-    expect(error._tag).toBe("DynamoDBDocumentError")
-    expect(error.$is("ResourceNotFoundException")).toBe(true)
+    expect(error).toBeInstanceOf(dynamodb_document.ResourceNotFoundException)
+    expect(error._tag).toBe("ResourceNotFoundException")
     expect(error.cause).toBeInstanceOf(DynamoDBSdk.ResourceNotFoundException)
   })
 
   it("applies the translate config to the base client from the context", async () => {
     const handle = vi.fn<Handle>(async () => dynamodbJson(200, {}))
-    const layer = dynamodb_document.DynamoDBDocumentClient.layer({ marshallOptions: { removeUndefinedValues: true } }).pipe(
+    const document = dynamodb_document.DynamoDBDocumentClient.layer({ marshallOptions: { removeUndefinedValues: true } }).pipe(
       Layer.provide(dynamodb.DynamoDBClient.layer(fakeAws(handle)))
     )
 
     await Effect.runPromise(
-      dynamodb_document.make("put", { TableName: "users", Item: { id: "1", note: undefined } }).pipe(Effect.provide(layer))
+      dynamodb_document.send("put", { TableName: "users", Item: { id: "1", note: undefined } }).pipe(Effect.provide(document))
     )
 
     expect(requestJson(handle.mock.calls[0]![0]).Item).toEqual({ id: { S: "1" } })
@@ -227,7 +227,7 @@ describe("dynamodb_document", () => {
 describe("error metadata", () => {
   const putItem = (response: Handle) =>
     Effect.runPromise(
-      dynamodb.make("put_item", { TableName: "t", Item: { id: { S: "1" } } }).pipe(
+      dynamodb.send("put_item", { TableName: "t", Item: { id: { S: "1" } } }).pipe(
         Effect.flip,
         Effect.provide(dynamodb.DynamoDBClient.layer(fakeAws(response)))
       )
@@ -239,6 +239,7 @@ describe("error metadata", () => {
       headers: { "content-type": "application/x-amz-json-1.0", "x-amzn-requestid": "req-1" }
     }))
 
+    expect(error._tag).toBe("ReplicatedWriteConflictException")
     expect(error.isRetryable).toBe(true)
     expect(error.isThrottling).toBe(false)
     expect(error.fault).toBe("client")
@@ -250,6 +251,22 @@ describe("error metadata", () => {
     const error = await putItem(async () => dynamodbError("ConditionalCheckFailedException", "failed"))
 
     expect(error.isRetryable).toBe(false)
+  })
+
+  it("drives Effect.retry through the metadata", async () => {
+    const handle = vi
+      .fn<Handle>()
+      .mockResolvedValueOnce(dynamodbError("ReplicatedWriteConflictException", "conflict"))
+      .mockResolvedValue(dynamodbJson(200, {}))
+
+    await Effect.runPromise(
+      dynamodb.send("put_item", { TableName: "t", Item: { id: { S: "1" } } }).pipe(
+        Effect.retry({ while: (error) => error.isRetryable, times: 3 }),
+        Effect.provide(dynamodb.DynamoDBClient.layer(fakeAws(handle)))
+      )
+    )
+
+    expect(handle).toHaveBeenCalledTimes(2)
   })
 })
 

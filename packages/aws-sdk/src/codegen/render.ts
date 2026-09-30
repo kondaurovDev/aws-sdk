@@ -33,11 +33,16 @@ const lines = (items: ReadonlyArray<string>, indent: string) =>
 /** `S3Client` -> `S3` */
 const serviceName = (model: SdkModel) => model.clientClassName.slice(0, -"Client".length)
 
+/** `S3` -> `s3`, `DynamoDB` -> `dynamoDB`: a camelCase prefix never collides with an SDK exception name */
+const lowerFirst = (name: string) => name.charAt(0).toLowerCase() + name.slice(1)
+
 const literalUnion = (values: ReadonlyArray<string>) =>
   values.length === 0 ? "never" : values.map((value) => JSON.stringify(value)).join(" | ")
 
+const typeUnion = (types: ReadonlyArray<string>) => (types.length === 0 ? "never" : types.join(" | "))
+
 const apiEntry = (command: SdkCommand) => {
-  const entry = `${command.method}: [Sdk.${command.name}CommandInput, Sdk.${command.name}CommandOutput, ${literalUnion(command.errors)}]`
+  const entry = `${command.method}: [Sdk.${command.name}CommandInput, Sdk.${command.name}CommandOutput, ${typeUnion(command.errors)}]`
   return command.docs ? `${renderJsDoc(command.docs, "  ")}\n  ${entry}` : `  ${entry}`
 }
 
@@ -46,6 +51,7 @@ export const renderClient = (model: SdkModel, options: RenderOptions): string =>
   const ns = makeNamespaceName(model.client)
   // A document client raises the exceptions of the client it is built on
   const Errors = model.base ? "Base" : "Sdk"
+  const exception = `${lowerFirst(name)}Exception`
   const firstMethod = model.commands[0]?.method ?? "command"
 
   const imports = [
@@ -57,6 +63,7 @@ export const renderClient = (model: SdkModel, options: RenderOptions): string =>
     ...(model.waiters.length > 0 ? [`import * as Duration from "effect/Duration"`] : []),
     `import * as Effect from "effect/Effect"`,
     `import * as Layer from "effect/Layer"`,
+    ...(model.base ? [] : [`import type * as Scope from "effect/Scope"`]),
     ...(model.paginators.length > 0 ? [`import * as Stream from "effect/Stream"`] : []),
     ...(model.base ? [``, `import { ${model.base.clientClassName} } from "./${model.base.client}.js"`] : [])
   ]
@@ -70,43 +77,92 @@ export const renderClient = (model: SdkModel, options: RenderOptions): string =>
 export class ${name}Client extends Context.Service<${name}Client, Sdk.${model.clientClassName}>()(
   "@effect-ak/aws-sdk/${name}Client"
 ) {
-  /**
-   * Wraps the ${model.base.clientClassName} from the context. Its lifecycle stays
-   * with that client's layer.
-   */
+  /** Wraps the ${model.base.clientClassName} from the context. Its lifecycle stays with that client. */
+  static readonly make = (
+    config?: Sdk.${model.configInterfaceName}
+  ): Effect.Effect<Sdk.${model.clientClassName}, never, ${model.base.clientClassName}> =>
+    Effect.map(${model.base.clientClassName}, (client) => Sdk.${model.clientClassName}.from(client, config))
+
   static readonly layer = (
     config?: Sdk.${model.configInterfaceName}
   ): Layer.Layer<${name}Client, never, ${model.base.clientClassName}> =>
-    Layer.effect(
-      ${name}Client,
-      Effect.map(${model.base.clientClassName}, (client) => Sdk.${model.clientClassName}.from(client, config))
-    )
+    Layer.effect(${name}Client, ${name}Client.make(config))
 }`
     : `/** The \`${model.packageName}\` client, provided by {@link ${name}Client.layer}. */
 export class ${name}Client extends Context.Service<${name}Client, Sdk.${model.clientClassName}>()(
   "@effect-ak/aws-sdk/${name}Client"
 ) {
-  /**
-   * Creates the SDK client when the layer is built and destroys it when the
-   * layer is released.
-   */
-  static readonly layer = (config?: Sdk.${model.configInterfaceName}): Layer.Layer<${name}Client> =>
-    Layer.effect(
-      ${name}Client,
-      Effect.acquireRelease(
-        Effect.sync(() => new Sdk.${model.clientClassName}(${clientConfig})),
-        (client) => Effect.sync(() => client.destroy())
-      )
+  /** Creates the SDK client; it is destroyed when the scope closes. */
+  static readonly make = (
+    config?: Sdk.${model.configInterfaceName}
+  ): Effect.Effect<Sdk.${model.clientClassName}, never, Scope.Scope> =>
+    Effect.acquireRelease(
+      Effect.sync(() => new Sdk.${model.clientClassName}(${clientConfig})),
+      (client) => Effect.sync(() => client.destroy())
     )
+
+  static readonly layer = (config?: Sdk.${model.configInterfaceName}): Layer.Layer<${name}Client> =>
+    Layer.effect(${name}Client, ${name}Client.make(config))
 }`
 
   const core = `
-/** Every modeled ${name} service exception, by name. */
-export type ${name}Errors = {
-${lines(model.exceptions.map((error) => `${error}: ${Errors}.${error}`), "  ")}
+interface ${name}ErrorProps {
+  readonly message: string
+  /** The exception thrown by the SDK */
+  readonly cause: ${Errors}.${model.serviceExceptionName}
+  /** The command that failed */
+  readonly command: ${name}Method
 }
 
-/** [input, output, documented exception names] of every ${name} command. */
+/** Base of every ${name} error: a tagged error around the SDK exception and its metadata. */
+const ${exception} = <Tag extends string>(tag: Tag) =>
+  class extends Data.TaggedError(tag)<${name}ErrorProps> {
+    /** The SDK marks the exception as retryable: throttling or a transient server error. */
+    get isRetryable(): boolean {
+      return this.cause.$retryable !== undefined
+    }
+
+    /** The request was throttled; retry with backoff. */
+    get isThrottling(): boolean {
+      return this.cause.$retryable?.throttling === true
+    }
+
+    /** Whether the client (4xx) or the service (5xx) is at fault, per the SDK. */
+    get fault(): "client" | "server" {
+      return this.cause.$fault
+    }
+
+    get statusCode(): number | undefined {
+      return this.cause.$metadata.httpStatusCode
+    }
+
+    get requestId(): string | undefined {
+      return this.cause.$metadata.requestId
+    }
+  }
+
+${model.exceptions
+  .map(
+    (error) => `export class ${error} extends ${exception}("${error}") {
+  declare readonly cause: ${Errors}.${error}
+}`
+  )
+  .join("\n")}
+
+/**
+ * Any other ${name} service exception: one the SDK does not document for the
+ * command, or one unknown to the SDK model. \`code\` names it.
+ */
+export class ${name}Error extends ${exception}("${name}Error") {
+  get code(): string {
+    return this.cause.name
+  }
+}
+
+/** Every error \`send\` can fail with. */
+export type ${name}Errors = ${typeUnion([...model.exceptions, `${name}Error`])}
+
+/** [input, output, documented exceptions] of every ${name} command. */
 type ${name}Api = {
 ${model.commands.map(apiEntry).join("\n")}
 }
@@ -114,88 +170,54 @@ ${model.commands.map(apiEntry).join("\n")}
 export type ${name}Method = keyof ${name}Api
 export type ${name}MethodInput<M extends ${name}Method> = ${name}Api[M][0]
 export type ${name}MethodOutput<M extends ${name}Method> = ${name}Api[M][1]
-/** Names of the exceptions documented for method \`M\`. */
-export type ${name}MethodError<M extends ${name}Method> = ${name}Api[M][2]
+/** The exceptions documented for method \`M\`, plus {@link ${name}Error} for any other. */
+export type ${name}MethodError<M extends ${name}Method> = ${name}Api[M][2] | ${name}Error
 /** The input may be omitted when none of its fields is required. */
 export type ${name}MethodArgs<M extends ${name}Method, Options = never> = {} extends ${name}MethodInput<M>
   ? [input?: ${name}MethodInput<M>, ...options: [Options] extends [never] ? [] : [options?: Options]]
   : [input: ${name}MethodInput<M>, ...options: [Options] extends [never] ? [] : [options?: Options]]
 
-/**
- * A modeled ${name} service exception raised by {@link make}. Failures outside
- * of the service model (network, credentials, ...) are defects.
- */
-export class ${name}Error<M extends ${name}Method = ${name}Method> extends Data.TaggedError("${name}Error")<{
-  readonly message: string
-  readonly cause: ${Errors}.${model.serviceExceptionName}
-  readonly command: ${name}Method
-}> {
-  declare readonly command: M
-
-  /** Narrows to one of the exceptions documented for the failed command. */
-  $is<N extends ${name}MethodError<M>>(
-    name: N
-  ): this is ${name}Error<M> & { readonly cause: ${name}Errors[N & keyof ${name}Errors] } {
-    return this.cause.name === name
-  }
-
-  /** Narrows to any modeled ${name} exception. */
-  is<N extends keyof ${name}Errors>(name: N): this is ${name}Error<M> & { readonly cause: ${name}Errors[N] } {
-    return this.cause.name === name
-  }
-
-  /** The SDK marks the exception as retryable: throttling or a transient server error. */
-  get isRetryable(): boolean {
-    return this.cause.$retryable !== undefined
-  }
-
-  /** The request was throttled; retry with backoff. */
-  get isThrottling(): boolean {
-    return this.cause.$retryable?.throttling === true
-  }
-
-  /** Whether the client (4xx) or the service (5xx) is at fault, per the SDK. */
-  get fault(): "client" | "server" {
-    return this.cause.$fault
-  }
-
-  get statusCode(): number | undefined {
-    return this.cause.$metadata.httpStatusCode
-  }
-
-  get requestId(): string | undefined {
-    return this.cause.$metadata.requestId
-  }
-}
-
-const to${name}Error = <M extends ${name}Method>(command: M, cause: unknown): ${name}Error<M> => {
-  if (cause instanceof ${Errors}.${model.serviceExceptionName}) {
-    return new ${name}Error<M>({ message: \`\${command}: \${cause.name}: \${cause.message}\`, cause, command })
-  }
-  // Rethrowing turns anything outside the service model into a defect
-  throw cause
-}
-
 const ${name}Commands: { readonly [M in ${name}Method]: new (input: ${name}MethodInput<M>) => unknown } = {
 ${lines(model.commands.map((command) => `${command.method}: Sdk.${command.name}Command,`), "  ")}
 }
 
+/** Exception names documented per command; any other one is raised as ${name}Error. */
+const ${name}CommandErrors: { readonly [M in ${name}Method]: ReadonlyArray<string> } = {
+${lines(model.commands.map((command) => `${command.method}: ${JSON.stringify(command.errors)},`), "  ")}
+}
+
+const ${name}ErrorClasses: Record<string, (new (props: ${name}ErrorProps) => ${name}Errors) | undefined> = {
+${lines(model.exceptions.map((error) => `${error},`), "  ")}
+}
+
+const to${name}Error = <M extends ${name}Method>(command: M, cause: unknown): ${name}MethodError<M> => {
+  // Rethrowing turns anything outside the service model into a defect
+  if (!(cause instanceof ${Errors}.${model.serviceExceptionName})) throw cause
+  const ErrorClass =
+    (${name}CommandErrors[command].includes(cause.name) ? ${name}ErrorClasses[cause.name] : undefined) ?? ${name}Error
+  return new ErrorClass({
+    message: \`\${command}: \${cause.name}: \${cause.message}\`,
+    cause,
+    command
+  }) as ${name}MethodError<M>
+}
+
 /**
- * Runs the given ${name} command. Interrupting the effect aborts the HTTP request.
+ * Sends the given ${name} command. Interrupting the effect aborts the HTTP request.
  *
  * @example
  * \`\`\`ts
  * import { ${ns} } from "./generated/index.js"
  *
- * const program = ${ns}.make("${firstMethod}", { ... }).pipe(
+ * const program = ${ns}.send("${firstMethod}", { ... }).pipe(
  *   Effect.provide(${ns}.${name}Client.layer())
  * )
  * \`\`\`
  */
-export const make = <M extends ${name}Method>(
+export const send = <M extends ${name}Method>(
   command: M,
   ...[input]: ${name}MethodArgs<M>
-): Effect.Effect<${name}MethodOutput<M>, ${name}Error<M>, ${name}Client> =>
+): Effect.Effect<${name}MethodOutput<M>, ${name}MethodError<M>, ${name}Client> =>
   Effect.gen(function* () {
     const client = yield* ${name}Client
     const sdkCommand = new ${name}Commands[command]((input ?? {}) as ${name}MethodInput<M>)
@@ -253,7 +275,7 @@ export interface ${name}PaginateOptions {
 export const paginate = <M extends ${name}Paginated>(
   command: M,
   ...[input, options]: ${name}MethodArgs<M, ${name}PaginateOptions>
-): Stream.Stream<${name}MethodOutput<M>, ${name}Error<M>, ${name}Client> =>
+): Stream.Stream<${name}MethodOutput<M>, ${name}MethodError<M>, ${name}Client> =>
   Stream.unwrap(
     Effect.map(${name}Client, (client) => {
       const controller = new AbortController()
@@ -320,7 +342,7 @@ export interface ${name}WaitOptions {
 }
 
 /** The awaited state was not reached. */
-export class ${name}WaiterError<W extends ${name}Waiter = ${name}Waiter> extends Data.TaggedError("${name}WaiterError")<{
+export class ${name}WaiterError extends Data.TaggedError("${name}WaiterError")<{
   readonly message: string
   readonly waiter: ${name}Waiter
   /** \`TIMEOUT\` after \`maxWaitTime\`; \`FAILURE\` when a state the waiter cannot recover from was observed */
@@ -328,11 +350,9 @@ export class ${name}WaiterError<W extends ${name}Waiter = ${name}Waiter> extends
   /** The last response or exception the SDK observed, when it reported one */
   readonly reason: unknown
   readonly cause: Error
-}> {
-  declare readonly waiter: W
-}
+}> {}
 
-const to${name}WaiterError = <W extends ${name}Waiter>(waiter: W, cause: unknown): ${name}WaiterError<W> => {
+const to${name}WaiterError = (waiter: ${name}Waiter, cause: unknown): ${name}WaiterError => {
   // The waiter only aborts when the effect is interrupted; an invalid
   // configuration (maxWaitTime below minDelay, ...) is a defect
   if (!(cause instanceof Error) || cause.name === "AbortError" || cause.message.startsWith("WaiterConfiguration.")) {
@@ -344,7 +364,7 @@ const to${name}WaiterError = <W extends ${name}Waiter>(waiter: W, cause: unknown
     details = JSON.parse(cause.message)
   } catch {}
   const state = cause.name === "TimeoutError" || details.state === "TIMEOUT" ? "TIMEOUT" : "FAILURE"
-  return new ${name}WaiterError<W>({
+  return new ${name}WaiterError({
     message: state === "TIMEOUT" ? \`\${waiter}: not reached within maxWaitTime\` : \`\${waiter}: cannot be reached\`,
     waiter,
     state,
@@ -372,7 +392,7 @@ export const waitUntil = <W extends ${name}Waiter>(
   waiter: W,
   input: ${name}WaiterInput<W>,
   options: ${name}WaitOptions
-): Effect.Effect<void, ${name}WaiterError<W>, ${name}Client> =>
+): Effect.Effect<void, ${name}WaiterError, ${name}Client> =>
   Effect.gen(function* () {
     const client = yield* ${name}Client
     yield* Effect.tryPromise({
@@ -424,12 +444,12 @@ export const renderIndex = (models: ReadonlyArray<SdkModel>): string => {
   const layers = (items: typeof clients, indent: string) =>
     lines(items.map(({ ns, service }) => `${ns}.${service}.layer(config?.${ns}),`), indent)
 
-  const makeClients = derived.length === 0
-    ? `export const makeClients = (config?: ClientsConfig) =>
+  const layer = derived.length === 0
+    ? `export const layer = (config?: ClientsConfig) =>
   Layer.mergeAll(
 ${layers(base, "    ")}
   )`
-    : `export const makeClients = (config?: ClientsConfig) =>
+    : `export const layer = (config?: ClientsConfig) =>
   Layer.provideMerge(
     Layer.mergeAll(
 ${layers(derived, "      ")}
@@ -452,6 +472,6 @@ ${lines(clients.map(({ ns, model }) => `readonly ${ns}?: ${model.configInterface
 }
 
 /** A single layer providing every generated client. */
-${makeClients}
+${layer}
 `
 }

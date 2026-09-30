@@ -5,7 +5,8 @@ name: Probe All AWS Clients
 # user hits it.
 on:
   schedule:
-    - cron: "0 6 * * *"
+    # Mondays 06:00 UTC; run it by hand after changing the scanner or templates
+    - cron: "0 6 * * 1"
   workflow_dispatch:
     inputs:
       version:

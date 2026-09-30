@@ -18,11 +18,5 @@
     "@types/node": "catalog:tooling",
     "typescript": "catalog:tooling"
   },
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": ">=12.0.0 <13.0.0",
-      "onFail": "download"
-    }
-  }
+  "packageManager": "pnpm@12.3.4"
 }

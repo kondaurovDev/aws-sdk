@@ -35,8 +35,8 @@ After changing `src/config/schema.ts`, run `pnpm -F @effect-ak/aws-sdk generate:
 
 `pnpm run probe` generates and typechecks wrappers for every published
 `@aws-sdk/client-*` package in a throwaway project (about a minute); the
-"Probe All AWS Clients" workflow runs it daily. Run it after changing the
-scanner or the templates.
+"Probe All AWS Clients" workflow runs it weekly and on demand. Run it after
+changing the scanner or the templates.
 
 ## Releasing
 

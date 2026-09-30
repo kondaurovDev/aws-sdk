@@ -30,7 +30,7 @@ Every command name, input, output and documented exception above is typed, strai
 
 - **The official SDK does the work.** Signing, protocols, endpoints, retries and every S3 corner case stay with `@aws-sdk/client-*`. The generated code only adds the Effect layer.
 - **The code is yours.** It lands in your repository, readable and editable, and imports nothing but `effect` and the SDK. There is no runtime dependency on this package.
-- **Any client, the day it ships.** The generator reads the declaration files of whatever `@aws-sdk/client-*` version you install, so new commands and services need no release on this side. It is verified daily against every published client package (435 at the time of writing): all of them generate and typecheck.
+- **Any client, the day it ships.** The generator reads the declaration files of whatever `@aws-sdk/client-*` version you install, so new commands and services need no release on this side. It is verified weekly against every published client package (435 at the time of writing): all of them generate and typecheck.
 - **The SDK ecosystem keeps working.** A generated layer holds a real SDK client, so [aws-sdk-client-mock](https://github.com/m-radzikowski/aws-sdk-client-mock), custom middleware, credential providers and OpenTelemetry instrumentation apply unchanged.
 
 ## What you get
@@ -192,7 +192,7 @@ The generated code runs the real SDK client, so the SDK's own testing tools appl
 
 `gen-aws-sdk` parses the declaration files of each installed client package. Command classes become the methods, the exception classes become tagged errors, the `@throws` annotations in each command's JSDoc decide its error channel, and the SDK's own paginators and waiters are wrapped rather than reimplemented. The output is plain TypeScript; nothing from this package runs in your application.
 
-Every day, the [probe workflow](https://github.com/kondaurovDev/aws-sdk/actions/workflows/probe.yml) installs the latest release of every `@aws-sdk/client-*` package, generates all of them and typechecks the result, so a change in the SDK's declaration files shows up here before it reaches you.
+Every week, the [probe workflow](https://github.com/kondaurovDev/aws-sdk/actions/workflows/probe.yml) installs the latest release of every `@aws-sdk/client-*` package, generates all of them and typechecks the result, so a change in the SDK's declaration files shows up here before it reaches you.
 
 ## How it compares
 
